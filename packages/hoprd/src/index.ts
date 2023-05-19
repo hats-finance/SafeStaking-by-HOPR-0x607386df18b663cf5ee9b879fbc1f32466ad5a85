@@ -3,6 +3,7 @@ import path from 'path'
 import {
   create_gauge,
   create_multi_gauge,
+  debug,
   get_package_version,
   Balance,
   BalanceType,
@@ -33,11 +34,12 @@ import {
 import type { State } from './types.js'
 import setupAPI from './api/index.js'
 import setupHealthcheck from './healthcheck.js'
-import { LogStream } from './logs.js'
 import { getIdentity } from './identity.js'
 import { decodeMessage } from './api/utils.js'
 import { type ChannelStrategyInterface, StrategyFactory } from '@hoprnet/hopr-core/lib/channel-strategy.js'
 import { RPCH_MESSAGE_REGEXP } from './api/v2.js'
+
+const debugLog = debug('hoprd')
 
 // Metrics
 const metric_processStartTime = create_gauge(
@@ -172,7 +174,6 @@ async function main() {
   const metric_startupTimer = metric_nodeStartupTime.start_measure()
 
   let node: Hopr
-  let logs = new LogStream()
   let state: State = {
     aliases: new Map(),
     settings: {
@@ -195,8 +196,7 @@ async function main() {
 
   const networkHealthChanged = (oldState: Health, newState: Health): void => {
     // Log the network health indicator state change (goes over the WS as well)
-    logs.log(`Network health indicator changed: ${health_to_string(oldState)} -> ${health_to_string(newState)}`)
-    logs.log(`NETWORK HEALTH: ${health_to_string(newState)}`)
+    debugLog(`Network health indicator changed: ${health_to_string(oldState)} -> ${health_to_string(newState)}`)
     if (metric_timerToGreen && newState == Health.Green) {
       metric_timeToGreen.record_measure(metric_timerToGreen)
       metric_timerToGreen = undefined
@@ -204,22 +204,22 @@ async function main() {
   }
 
   const logMessageToNode = (msg: Uint8Array): void => {
-    logs.log(`#### NODE RECEIVED MESSAGE [${new Date().toISOString()}] ####`)
+    debugLog(`#### NODE RECEIVED MESSAGE [${new Date().toISOString()}] ####`)
     try {
       let decodedMsg = decodeMessage(msg)
-      logs.log(`Message: ${decodedMsg.msg}`)
-      logs.log(`Latency: ${decodedMsg.latency} ms`)
+      debugLog(`Message: ${decodedMsg.msg}`)
+      debugLog(`Latency: ${decodedMsg.latency} ms`)
       metric_latency.observe(decodedMsg.latency)
 
       if (RPCH_MESSAGE_REGEXP.test(decodedMsg.msg)) {
-        logs.log(`RPCh: received message [${decodedMsg.msg}]`)
+        debugLog(`RPCh: received message [${decodedMsg.msg}]`)
       }
 
       // also send it tagged as message for apps to use
-      logs.logMessage(decodedMsg.msg)
+      debugLogMessage(decodedMsg.msg)
     } catch (err) {
-      logs.log('Could not decode message', err instanceof Error ? err.message : 'Unknown error')
-      logs.log(msg.toString())
+      debugLog('Could not decode message', err instanceof Error ? err.message : 'Unknown error')
+      debugLog(msg.toString())
     }
   }
 
@@ -255,11 +255,11 @@ async function main() {
   let options = generateNodeOptions(cfg, environment)
 
   try {
-    logs.log(`This is HOPRd version ${version}`)
+    debugLog(`This is HOPRd version ${version}`)
     metric_version.set([pickVersion(version)], 1.0)
 
     if (on_avado) {
-      logs.log('This node appears to be running on an AVADO/Dappnode')
+      debugLog('This node appears to be running on an AVADO/Dappnode')
     }
 
     // 1. Find or create an identity
@@ -272,16 +272,15 @@ async function main() {
     })
 
     // 2. Create node instance
-    logs.log('Creating HOPR Node')
+    debugLog('Creating HOPR Node')
     node = await createHoprNode(peerId, options, false)
-    logs.logStatus('PENDING')
 
     // Subscribe to node events
     node.on('hopr:message', logMessageToNode)
     node.on('hopr:network-health-changed', networkHealthChanged)
     node.subscribeOnConnector('hopr:connector:created', () => {
       // 2.b - Connector has been created, and we can now trigger the next set of steps.
-      logs.log('Connector has been loaded properly.')
+      debugLog('Connector has been loaded properly.')
       node.emit('hopr:monitoring:start')
     })
     node.once('hopr:monitoring:start', async () => {
@@ -291,7 +290,6 @@ async function main() {
       console.log(JSON.stringify(api, null, 2))
       const startApiListen = setupAPI(
         node,
-        logs,
         { getState, setState },
         {
           disableApiAuthentication: api.is_auth_disabled(),
@@ -304,19 +302,19 @@ async function main() {
       if (cfg.api.enable) startApiListen()
 
       if (cfg.healthcheck.enable) {
-        setupHealthcheck(node, logs, cfg.healthcheck.host, cfg.healthcheck.port)
+        setupHealthcheck(node, cfg.healthcheck.host, cfg.healthcheck.port)
       }
 
-      logs.log(`Node address: ${node.getId().toString()}`)
+      debugLog(`Node address: ${node.getId().toString()}`)
 
       const ethAddr = node.getEthereumAddress().to_hex()
       const fundsReq = new Balance(SUGGESTED_NATIVE_BALANCE.toString(10), BalanceType.Native).to_formatted_string()
 
-      logs.log(`Node is not started, please fund this node ${ethAddr} with at least ${fundsReq}`)
+      debugLog(`Node is not started, please fund this node ${ethAddr} with at least ${fundsReq}`)
 
       // 2.5 Await funding of wallet.
       await node.waitForFunds()
-      logs.log('Node has been funded, starting...')
+      debugLog('Node has been funded, starting...')
 
       // 3. Start the node.
       await node.start()
@@ -324,28 +322,27 @@ async function main() {
       // alias self
       state.aliases.set('me', node.getId())
 
-      logs.logStatus('READY')
-      logs.log('Node has started!')
+      debugLogStatus('READY')
+      debugLog('Node has started!')
       metric_nodeStartupTime.record_measure(metric_startupTimer)
     })
 
     // 2.a - Setup connector listener to bubble up to node. Emit connector creation.
-    logs.log(`Ready to request on-chain connector to connect to provider.`)
+    debugLog(`Ready to request on-chain connector to connect to provider.`)
     node.emitOnConnector('connector:create')
   } catch (e) {
-    logs.log('Node failed to start:')
-    logs.logFatalError('' + e)
+    debugLog(`Node failed to start: ${e}`)
     process.exit(1)
   }
 
   function stopGracefully(signal) {
-    logs.log(`Process exiting with signal ${signal}`)
+    debugLog(`Process exiting with signal ${signal}`)
     process.exit()
   }
 
   process.on('uncaughtExceptionMonitor', (err, origin) => {
     // Make sure we get a log.
-    logs.log(`FATAL ERROR, exiting with uncaught exception: ${origin} ${err}`)
+    debugLog(`FATAL ERROR, exiting with uncaught exception: ${origin} ${err}`)
   })
 
   process.once('exit', stopGracefully)

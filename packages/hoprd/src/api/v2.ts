@@ -24,7 +24,6 @@ import type { Application, Request } from 'express'
 import type { WebSocket, WebSocketServer } from 'ws'
 import type Hopr from '@hoprnet/hopr-core'
 import { SettingKey, StateOps } from '../types.js'
-import type { LogStream } from './../logs.js'
 import type { Token } from './token.js'
 
 const debugLog = debug('hoprd:api:v2')
@@ -267,14 +266,12 @@ export async function setupRestApi(
 const WS_PATHS = {
   NONE: '', // used for testing
   MESSAGES: '/api/v2/messages/websocket',
-  LEGACY_STREAM: '/api/v2/node/stream/websocket'
 }
 
 export function setupWsApi(
   server: Server,
   wss: WebSocketServer,
   node: Hopr,
-  logStream: LogStream,
   options: { apiToken?: string }
 ) {
   // before upgrade to WS, we perform various checks
@@ -356,8 +353,6 @@ export function setupWsApi(
       node.on('hopr:message-acknowledged', (ackChallenge: string) => {
         socket.send(`ack:'${ackChallenge}'`)
       })
-    } else if (path === WS_PATHS.LEGACY_STREAM) {
-      logStream.subscribe(socket)
     } else {
       // close connection on unsupported paths
       socket.close(1000)
