@@ -14,6 +14,7 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
 use std::str::FromStr;
+use ed25519_dalek::{Keypair, Signer};
 
 use utils_log::warn;
 use utils_types::errors::GeneralError;
@@ -819,6 +820,63 @@ impl BinarySerializable<'_> for Response {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
+pub struct OffchainSignature {
+    #[serde(with = "arrays")]
+    signature: [u8; Self::SIZE]
+}
+
+impl BinarySerializable<'_> for OffchainSignature {
+    const SIZE: usize = 64;
+
+    fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
+        if data.len() == Self::SIZE {
+            Ok(Self {
+                signature: data.try_into().map_err(|_| ParseError)?
+            })
+        } else {
+            Err(ParseError)
+        }
+    }
+
+    fn to_bytes(&self) -> Box<[u8]> {
+        self.signature.into()
+    }
+}
+
+#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
+impl OffchainSignature {
+    #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen(constructor))]
+    pub fn new(raw_bytes: &[u8]) -> Self {
+        Self::from_bytes(raw_bytes).expect("invalid input signature data")
+    }
+
+    /// Signs the given message using the raw private key.
+    pub fn sign_message(message: &[u8], private_key: &[u8], public_key: &OffchainPublicKey) -> OffchainSignature {
+        let kp = Keypair {
+            secret: ed25519_dalek::SecretKey::from_bytes(private_key).expect("invalid signing key"),
+            public: ed25519_dalek::PublicKey::from_bytes(&public_key.to_bytes()).unwrap()
+        };
+
+        Self {
+            signature: kp.sign(message).to_bytes()
+        }
+    }
+
+    /// Verifies this signature against the given message and a public key object
+    pub fn verify_message(&self, message: &[u8], public_key: &OffchainPublicKey) -> bool {
+        let pk = ed25519_dalek::PublicKey::from_bytes(&public_key.to_bytes()).unwrap();
+        if let Err(e) = pk.verify_strict(message, &ed25519_dalek::Signature::from_bytes(&self.signature).expect("invalid signature")) {
+            warn!("signature verification failed {e}");
+            println!("{e}");
+            false
+        } else {
+            true
+        }
+    }
+}
+
 /// Represents an ECDSA signature based on the secp256k1 curve with recoverable public key.
 /// This signature encodes the 2-bit recovery information into the
 /// upper-most bits of MSB of the S value, which are never used by this ECDSA
@@ -993,10 +1051,7 @@ pub mod tests {
     use utils_types::primitives::Address;
     use utils_types::traits::{BinarySerializable, PeerIdLike, ToHex};
 
-    use crate::types::{
-        Challenge, CurvePoint, HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey, PublicKey, Response, Signature,
-        ToChecksum,
-    };
+    use crate::types::{Challenge, CurvePoint, HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey, OffchainSignature, PublicKey, Response, Signature, ToChecksum};
 
     const PUBLIC_KEY: [u8; 33] = hex!("021464586aeaea0eb5736884ca1bf42d165fc8e2243b1d917130fb9e321d7a93b8");
     const PRIVATE_KEY: [u8; 32] = hex!("e17fe86ce6e99f4806715b0c9412f8dad89334bf07f72d5834207a9d8f19d7f8");
@@ -1128,6 +1183,23 @@ pub mod tests {
     }
 
     #[test]
+    fn offchain_signature_test() {
+        let msg = hex!("deadbeef");
+        let (pk, pubk) = OffchainPublicKey::random_keypair();
+
+        let sgn1 = OffchainSignature::sign_message(&msg, &pk, &pubk);
+        let sgn2 = OffchainSignature::from_bytes(&sgn1.to_bytes()).unwrap();
+
+        assert!(sgn1.verify_message(&msg, &pubk));
+        assert!(sgn2.verify_message(&msg, &pubk));
+
+        let msg2 = hex!("deadcafe");
+        assert!(!sgn1.verify_message(&msg2, &pubk));
+        assert!(!sgn2.verify_message(&msg2, &pubk));
+    }
+
+
+    #[test]
     fn public_key_serialize_test() {
         let pk1 = PublicKey::from_bytes(&PUBLIC_KEY).expect("failed to deserialize 1");
         let pk2 = PublicKey::from_bytes(&pk1.to_bytes(true)).expect("failed to deserialize 2");
@@ -1172,7 +1244,7 @@ pub mod tests {
     }
 
     #[test]
-    fn offchain_pubkc_key_peerid_test() {
+    fn offchain_public_key_peerid_test() {
         let peerid = PeerId::from_str("12D3KooWLYKsvDB4xEELYoHXxeStj2gzaDXjra2uGaFLpKCZkJHs").unwrap();
 
         let pk = OffchainPublicKey::from_peerid(&peerid).unwrap();
