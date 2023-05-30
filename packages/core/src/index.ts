@@ -57,7 +57,7 @@ import {
   HalfKeyChallenge,
   Balance,
   BalanceType,
-  type HoprDB
+  type HoprDB, pickVersion
 } from '@hoprnet/hopr-utils'
 
 import { FULL_VERSION, INTERMEDIATE_HOPS, MAX_HOPS, PACKET_SIZE, VERSION, MAX_PARALLEL_PINGS } from './constants.js'
@@ -91,15 +91,19 @@ import {
   StrategyTickResult
 } from './channel-strategy.js'
 
-import { AcknowledgementInteraction } from './interactions/packet/acknowledgement.js'
-import { PacketForwardInteraction } from './interactions/packet/forward.js'
-
-import { Packet, PacketHelper } from './messages/index.js'
+import { privateKeyFromPeer } from './messages/index.js'
 import type { ResolvedNetwork } from './network.js'
 import { createLibp2pInstance } from './main.js'
 import type { EventEmitter as Libp2pEmitter } from '@libp2p/interfaces/events'
 import { utils as ethersUtils } from 'ethers/lib/ethers.js'
 import { peerIdFromString } from '@libp2p/peer-id'
+import {
+  PacketInteractionConfig, Path,
+  Payload,
+  WasmAckInteraction,
+  WasmPacketInteraction
+} from '../crates/core-packet/pkg/core_packet.js'
+import pkg from '../package.json'
 
 const CODE_P2P = protocols('p2p').code
 
@@ -233,6 +237,8 @@ export type SendMessage = ((
 ) => Promise<Uint8Array[]>) &
   ((dest: PeerId, protocols: string | string[], msg: Uint8Array, includeReply: false, opts?: DialOpts) => Promise<void>)
 
+const NORMALIZED_VERSION = pickVersion(pkg.version)
+
 class Hopr extends EventEmitter {
   public status: NodeStatus = 'UNINITIALIZED'
 
@@ -240,8 +246,8 @@ class Hopr extends EventEmitter {
   private strategy: ChannelStrategyInterface
   private networkPeers: Network
   private heartbeat: Heartbeat
-  private forward: PacketForwardInteraction
-  private acknowledgements: AcknowledgementInteraction
+  private forward: WasmPacketInteraction
+  private acknowledgements: WasmAckInteraction
   private libp2pComponents: Components
   private stopLibp2p: Libp2p['stop']
   private pubKey: PublicKey
@@ -460,38 +466,76 @@ class Hopr extends EventEmitter {
       this.networkPeers.register(event.detail.remotePeer.toString(), PeerOrigin.IncomingConnection)
     })
 
-    this.acknowledgements = new AcknowledgementInteraction(
-      sendMessage,
-      this.libp2pComponents,
-      this.getId(),
-      this.db,
-      (ackChallenge: HalfKeyChallenge) => {
-        // Can subscribe to both: per specific message or all message acknowledgments
-        this.emit(`hopr:message-acknowledged:${ackChallenge.to_hex()}`)
-        this.emit('hopr:message-acknowledged', ackChallenge.to_hex())
-      },
-      (ack: AcknowledgedTicket) => connector.emit('ticket:acknowledged', ack),
-      this.network
-    )
+    const onAck = (ackChallenge: Uint8Array) => {
+      let chal = HalfKeyChallenge.deserialize(ackChallenge)
+      // Can subscribe to both: per specific message or all message acknowledgments
+      this.emit(`hopr:message-acknowledged:${chal.to_hex()}`)
+      this.emit('hopr:message-acknowledged', chal.to_hex())
+    }
+
+    const onAckTicket = (ackTicket: Uint8Array) => {
+      let tkt = AcknowledgedTicket.deserialize(ackTicket)
+      connector.emit('ticket:acknowledged', tkt)
+    }
+    this.acknowledgements = new WasmAckInteraction(this.db, PublicKey.from_peerid_str(this.id.toString()), onAck, onAckTicket)
+
+    let acknowledgementProtocols = [
+      // current
+      `/hopr/${this.network.id}/ack/${NORMALIZED_VERSION}`,
+      // deprecated
+      `/hopr/${this.network.id}/ack`
+    ];
+
+    await this.libp2pComponents.getRegistrar().handle(acknowledgementProtocols, async ({ connection, stream }) => {
+      try {
+        for await (const chunk of stream.source) {
+          let payload = new Payload(connection.remotePeer.toString(), chunk)
+          await this.acknowledgements.received_acknowledgement(payload)
+        }
+      } catch (err) {
+        log(`Error while receiving acknowledgement`, err)
+      }
+    })
+
+    let packetCfg = new PacketInteractionConfig();
+    packetCfg.check_unrealized_balance = this.options.checkUnrealizedBalance ?? true
+    packetCfg.private_key = privateKeyFromPeer(this.id)
 
     const onMessage = (msg: Uint8Array) => this.emit('hopr:message', msg)
-    this.forward = new PacketForwardInteraction(
-      this.libp2pComponents,
-      sendMessage,
-      this.getId(),
-      onMessage,
-      this.db,
-      this.network,
-      this.acknowledgements,
-      this.options
-    )
+    this.forward = new WasmPacketInteraction(this.db, onMessage, packetCfg)
+
+    let packetProtocols = [
+      // current
+      `/hopr/${this.network.id}/msg/${NORMALIZED_VERSION}`,
+      // deprecated
+      `/hopr/${this.network.id}/msg`
+    ];
+
+    await this.libp2pComponents.getRegistrar().handle(packetProtocols, async ({ connection, stream }) => {
+      try {
+        for await (const chunk of stream.source) {
+          let payload = new Payload(connection.remotePeer.toString(), chunk)
+          await this.forward.received_packet(payload)
+        }
+      } catch (err) {
+        error(`Error while receiving packet`, err)
+      }
+    })
+
+    const packetInteractionSendMsg = (msg: Uint8Array, dest: string): Promise<void> =>
+      sendMessage(peerIdFromString(dest), packetProtocols, msg, false)
+
+    const acknowledgementInteractionSendMsg = (msg: Uint8Array, dest: string): Promise<void> =>
+      sendMessage(peerIdFromString(dest), acknowledgementProtocols, msg, false)
 
     // Attach socket listener and check availability of entry nodes
     await libp2p.start()
 
-    // Register protocols
-    await this.acknowledgements.start()
-    await this.forward.start()
+    // Intentionally not awaited to spawn in the background
+    this.forward.handle_incoming_packets(this.acknowledgements, packetInteractionSendMsg)
+    this.forward.handle_outgoing_packets(packetInteractionSendMsg)
+    this.acknowledgements.handle_incoming_acknowledgements()
+    this.acknowledgements.handle_outgoing_acknowledgements(acknowledgementInteractionSendMsg)
 
     log('libp2p started')
 
@@ -994,35 +1038,10 @@ class Hopr extends EventEmitter {
       }
     }
 
-    const path: PublicKey[] = [].concat(intermediatePath, [PublicKey.from_peerid_str(destination.toString())])
-    metric_pathLength.observe(path.length)
+    const path = new Path([...intermediatePath.map((pk) => pk.to_peerid_str()), destination.toString()])
+    metric_pathLength.observe(path.length())
 
-    let packet: Packet
-    try {
-      packet = await PacketHelper.create(
-        msg,
-        path.map((x) => peerIdFromString(x.to_peerid_str())),
-        this.getId(),
-        this.db
-      )
-    } catch (err) {
-      log(`Could not create packet ${err}`)
-      metric_sentMessageFailCount.increment()
-      throw Error(`Error while creating packet.`)
-    }
-
-    await PacketHelper.storePendingAcknowledgement(packet, this.db)
-
-    try {
-      await this.forward.interact(peerIdFromString(path[0].to_peerid_str()), packet)
-    } catch (err) {
-      log(`Could not send packet ${err}`)
-      metric_sentMessageFailCount.increment()
-      throw Error(`Failed to send packet.`)
-    }
-
-    metric_sentMessageCount.increment()
-    return packet.ack_challenge().to_hex()
+    return (await this.forward.send_packet(msg, path)).to_hex()
   }
 
   /**
