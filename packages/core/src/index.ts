@@ -91,18 +91,20 @@ import {
   StrategyTickResult
 } from './channel-strategy.js'
 
-import { privateKeyFromPeer } from './messages/index.js'
 import type { ResolvedNetwork } from './network.js'
 import { createLibp2pInstance } from './main.js'
 import type { EventEmitter as Libp2pEmitter } from '@libp2p/interfaces/events'
 import { utils as ethersUtils } from 'ethers/lib/ethers.js'
 import { peerIdFromString } from '@libp2p/peer-id'
 import {
+  core_packet_initialize_crate,
   PacketInteractionConfig, Path,
   Payload,
   WasmAckInteraction,
   WasmPacketInteraction
 } from '../crates/core-packet/pkg/core_packet.js'
+core_packet_initialize_crate()
+
 import pkg from '../package.json'
 
 const CODE_P2P = protocols('p2p').code
@@ -120,7 +122,6 @@ const metric_channelBalances = create_multi_gauge(
   'Balances on channels with counterparties',
   ['counterparty', 'direction']
 )
-const metric_sentMessageCount = create_counter('core_counter_sent_messages', 'Number of sent messages')
 const metric_sentMessageFailCount = create_counter(
   'core_counter_failed_send_messages',
   'Number of sent messages failures'
@@ -143,6 +144,12 @@ const metric_strategyMaxChannels = create_gauge(
   'core_gauge_strategy_max_auto_channels',
   'Maximum number of channels the current strategy can open'
 )
+
+export function privateKeyFromPeer(peer: PeerId) {
+  if (peer.privateKey == undefined) throw Error('peer id does not contain a private key')
+
+  return keysPBM.PrivateKey.decode(peer.privateKey).Data
+}
 
 // Using libp2p components directly because it allows us
 // to bypass the API layer
