@@ -25,8 +25,8 @@ import { getAddrs } from './identity.js'
 import { createLibp2pMock } from './libp2p.mock.js'
 import { getContractData, supportedNetworks } from './network.js'
 import { MultiaddrConnection } from '@libp2p/interfaces/transport'
-import { Database as Packet_Database, PublicKey as Packet_PublicKey } from '../crates/core-packet/pkg/core_packet.js'
-import { Database as Ethereum_Database, PublicKey as Ethereum_PublicKey} from '../../core-ethereum/crates/core-ethereum-db/pkg/core_ethereum_db.js'
+import { Database as Packet_Database, PublicKey as Packet_PublicKey } from '../lib/core_packet.js'
+import { Database as Ethereum_Database, PublicKey as Ethereum_PublicKey} from '../../core-ethereum/lib/core_ethereum_misc.js'
 
 const log = debug(`hopr-core:create-hopr`)
 const error = debug(`hopr-core:error`)

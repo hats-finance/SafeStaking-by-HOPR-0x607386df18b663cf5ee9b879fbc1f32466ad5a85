@@ -1,13 +1,15 @@
 import assert from 'assert'
 import sinon from 'sinon'
-import { dbMock, debug, stringToU8a } from '@hoprnet/hopr-utils'
+import { debug, LevelDb, stringToU8a } from '@hoprnet/hopr-utils'
 import HoprCoreEthereum, { Indexer, useFixtures } from './index.js'
 import { sampleChainOptions } from './ethereum.mock.js'
 import { ACCOUNT_A, MOCK_ADDRESS, MOCK_PUBLIC_KEY, PARTY_A } from './fixtures.js'
-// import { Database } from '../lib/core_ethereum_db.js'
+import { Database } from '../lib/core_ethereum_misc.js'
 
 const namespace = 'hopr:test:hopr-ethereum'
 const log = debug(namespace)
+
+const dbMock = new Database(new LevelDb(), )
 
 describe(`test HoprEthereum instance creation`, function () {
   beforeEach(async () => {

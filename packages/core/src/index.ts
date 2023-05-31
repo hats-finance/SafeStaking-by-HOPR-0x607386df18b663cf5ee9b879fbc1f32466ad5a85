@@ -96,15 +96,15 @@ import type { EventEmitter as Libp2pEmitter } from '@libp2p/interfaces/events'
 import { utils as ethersUtils } from 'ethers/lib/ethers.js'
 import { peerIdFromString } from '@libp2p/peer-id'
 import {
-  core_packet_initialize_crate, Database, Address as Packet_Address,
+  core_packet_initialize_crate, core_packet_gather_metrics, Database, Address as Packet_Address,
   PacketInteractionConfig, Path,
   Payload,
   PublicKey as Packet_PublicKey,
   WasmAckInteraction,
   WasmPacketInteraction, WasmVecAcknowledgedTicket
-} from '../crates/core-packet/pkg/core_packet.js'
+} from '../lib/core_packet.js'
 core_packet_initialize_crate()
-registerMetricsCollector(core_network_gather_metrics)
+registerMetricsCollector(core_packet_gather_metrics)
 
 import pkg from '../package.json'
 

@@ -8,23 +8,22 @@ import {
   BalanceType,
   Address,
   cacheNoArgAsyncFunction,
-  HoprDB,
   ChannelStatus,
   generate_channel_id,
   Hash,
   debug,
-  privKeyToPeerId,
   type ChannelEntry,
   type DeferType,
   PublicKey,
   AccountEntry,
   create_counter
 } from '@hoprnet/hopr-utils'
-import { Database } from '../lib/core_ethereum_db.js'
+import { Database, ChannelCommitmentInfo, find_commitment_preimage, bump_commitment, initialize_commitment,
+Hash as Ethereum_Hash } from '../lib/core_ethereum_misc.js'
 import Indexer from './indexer/index.js'
 import { CORE_ETHEREUM_CONSTANTS } from '../lib/core_ethereum_misc.js'
 import { EventEmitter } from 'events'
-import { initializeCommitment, findCommitmentPreImage, bumpCommitment, ChannelCommitmentInfo } from './commitment.js'
+
 import type { IndexerEvents } from './indexer/types.js'
 import { DeploymentExtract } from './utils/utils.js'
 
@@ -75,7 +74,6 @@ export default class HoprCoreEthereum extends EventEmitter {
   private ticketRedemtionInChannelOperations: ticketRedemtionInChannelOperations = new Map()
 
   private constructor(
-    private db: HoprDB,
     private db_rs: Database,
     private publicKey: PublicKey,
     private privateKey: Uint8Array,
@@ -95,7 +93,7 @@ export default class HoprCoreEthereum extends EventEmitter {
   }
 
   public static createInstance(
-    db: HoprDB,
+    db: Database,
     publicKey: PublicKey,
     privateKey: Uint8Array,
     options: ChainOptions,
@@ -103,7 +101,6 @@ export default class HoprCoreEthereum extends EventEmitter {
   ) {
     HoprCoreEthereum._instance = new HoprCoreEthereum(
       db,
-      new Database(db.db, db.id),
       publicKey,
       privateKey,
       options,
@@ -225,7 +222,7 @@ export default class HoprCoreEthereum extends EventEmitter {
    * @returns HOPR balance
    */
   public async getBalance(useIndexer: boolean = false): Promise<Balance> {
-    return useIndexer ? this.db_rs.get_hopr_balance() : this.chain.getBalance(this.publicKey.to_address())
+    return useIndexer ? Balance.deserialize((await this.db_rs.get_hopr_balance()).serialize_value(),BalanceType.HOPR) : this.chain.getBalance(this.publicKey.to_address())
   }
 
   public getPublicKey(): PublicKey {
@@ -279,7 +276,7 @@ export default class HoprCoreEthereum extends EventEmitter {
       c.channel_epoch
     )
 
-    await initializeCommitment(this.db_rs, privKeyToPeerId(this.privateKey), cci, getCommitment, setCommitment)
+    await initialize_commitment(this.db_rs, this.privateKey, cci, getCommitment, setCommitment)
   }
 
   public async redeemAllTickets(): Promise<void> {
@@ -355,8 +352,8 @@ export default class HoprCoreEthereum extends EventEmitter {
     // those tickets.
 
     const boundRedeemTicket = this.redeemTicket.bind(this)
-    const boundGetAckdTickets = this.db_rs.get_acknowledged_tickets.bind(this.db)
-    const boundMarkLosingAckedTicket = this.db_rs.mark_losing_acked_ticket.bind(this.db)
+    const boundGetAckdTickets = this.db_rs.get_acknowledged_tickets.bind(this.db_rs)
+    const boundMarkLosingAckedTicket = this.db_rs.mark_losing_acked_ticket.bind(this.db_rs)
 
     // Use an async iterator to make execution interruptable and allow
     // Node.JS to schedule iterations at any time
@@ -428,10 +425,10 @@ export default class HoprCoreEthereum extends EventEmitter {
       }
     }
 
-    let commitmentPreImage: Hash // actual ackTicket.preImage
+    let commitmentPreImage: Ethereum_Hash // actual ackTicket.preImage
 
     try {
-      commitmentPreImage = await findCommitmentPreImage(this.db_rs, channelId)
+      commitmentPreImage = await find_commitment_preimage(this.db_rs, Ethereum_Hash.deserialize(channelId.serialize()))
     } catch (err) {
       log(`Channel ${channelId.to_hex()} is out of commitments`)
       // TODO: How should we handle this ticket if it's out of commitment
@@ -441,7 +438,7 @@ export default class HoprCoreEthereum extends EventEmitter {
       }
     }
     // set the commitment
-    ackTicket.set_preimage(commitmentPreImage)
+    ackTicket.set_preimage(Hash.deserialize(commitmentPreImage.serialize()))
     log(`Set preImage ${commitmentPreImage.to_hex()} for ticket ${ackTicket.response.to_hex()}`)
 
     let receipt: string
@@ -487,7 +484,7 @@ export default class HoprCoreEthereum extends EventEmitter {
 
     // bump commitment when on-chain ticket redemption is successful
     // FIXME: bump commitment can fail if channel runs out of commitments
-    await bumpCommitment(this.db_rs, channelId, commitmentPreImage)
+    await bump_commitment(this.db_rs, Ethereum_Hash.deserialize(channelId.serialize()), commitmentPreImage)
     log(`Successfully bump local commitment after ${commitmentPreImage.to_hex()}`)
 
     await this.db_rs.mark_redeemed(ackTicket)
@@ -644,7 +641,4 @@ export {
   Indexer,
   ChainWrapper,
   createChainWrapper,
-  initializeCommitment,
-  findCommitmentPreImage,
-  bumpCommitment
 }
