@@ -1443,9 +1443,8 @@ pub mod wasm {
     use std::future::Future;
     use std::pin::Pin;
     use std::str::FromStr;
-    use std::sync::{Arc, Mutex};
-    use utils_db::db::DB;
-    use utils_db::leveldb::{LevelDb, LevelDbShim};
+    use std::sync::Arc;
+    use utils_db::leveldb::LevelDbShim;
     use utils_log::error;
     use utils_misc::ok_or_jserr;
     use utils_misc::utils::wasm::JsResult;
@@ -1453,6 +1452,7 @@ pub mod wasm {
     use wasm_bindgen::prelude::wasm_bindgen;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
+    use core_ethereum_db::db::wasm::Database;
 
     #[wasm_bindgen]
     impl Payload {
@@ -1510,7 +1510,7 @@ pub mod wasm {
     impl WasmAckInteraction {
         #[wasm_bindgen(constructor)]
         pub fn new(
-            db: LevelDb,
+            db: Database,
             chain_key: PublicKey,
             on_acknowledgement: Option<js_sys::Function>,
             on_acknowledged_ticket: Option<js_sys::Function>,
@@ -1549,10 +1549,7 @@ pub mod wasm {
 
             Self {
                 w: Arc::new(AcknowledgementInteraction::new(
-                    Arc::new(Mutex::new(CoreEthereumDb::new(
-                        DB::new(LevelDbShim::new(db)),
-                        chain_key.clone(),
-                    ))),
+                    db.as_ref_counted(),
                     chain_key,
                     on_ack.0,
                     on_ack_ticket.0,
@@ -1594,17 +1591,14 @@ pub mod wasm {
     #[wasm_bindgen]
     impl WasmPacketInteraction {
         #[wasm_bindgen(constructor)]
-        pub fn new(db: LevelDb, on_final_packet: Option<js_sys::Function>, cfg: PacketInteractionConfig) -> Self {
+        pub fn new(db: Database, on_final_packet: Option<js_sys::Function>, cfg: PacketInteractionConfig) -> Self {
             let on_msg = on_final_packet.is_some().then(unbounded::<Box<[u8]>>).unzip();
 
             // For WASM we need to create mixer with gloo-timers
             let gloo_mixer = Mixer::new_with_gloo_timers(cfg.mixer.clone());
 
             let mut w = PacketInteraction::new(
-                Arc::new(Mutex::new(CoreEthereumDb::new(
-                    DB::new(LevelDbShim::new(db)),
-                    PublicKey::from_privkey(&cfg.private_key).expect("invalid private key"),
-                ))),
+                db.as_ref_counted(),
                 on_msg.0,
                 cfg,
             );

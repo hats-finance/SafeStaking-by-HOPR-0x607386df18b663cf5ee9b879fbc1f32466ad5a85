@@ -778,6 +778,7 @@ pub mod wasm {
     to_iterable!(WasmVecPublicKey, PublicKey);
 
     #[wasm_bindgen]
+    #[derive(Clone)]
     pub struct Database {
         core_ethereum_db: Arc<Mutex<CoreEthereumDb<leveldb::LevelDbShim>>>,
     }
@@ -798,6 +799,11 @@ pub mod wasm {
                     public_key.clone(),
                 ))),
             }
+        }
+
+        #[wasm_bindgen(js_name = "clone")]
+        pub fn _clone(&self) -> Self {
+            self.clone()
         }
     }
 
