@@ -214,6 +214,7 @@ class RelayState {
           try {
             if ((await conn.ping(timeout)) < 0) {
               if (this.relayedConnections.delete(id)) {
+                verbose(`deleted ${id} inactive relayed connection from the relay state`)
                 ++pruned
               } else {
                 error(`could not delete ${id} inactive relayed connection from the relay state`)

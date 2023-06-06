@@ -118,14 +118,11 @@ class Listener extends EventEmitter<ListenerEvents> implements InterfaceListener
       const usedRelays = this.connectComponents.getEntryNodes().getUsedRelayAddresses()
 
       if (usedRelays && usedRelays.length > 0) {
-        const relayPeerIds = this.connectComponents
-          .getEntryNodes()
-          .getUsedRelayAddresses()
-          .map((ma: Multiaddr) => {
-            const tuples = ma.tuples()
+        const relayPeerIds = usedRelays.map((ma: Multiaddr) => {
+          const tuples = ma.tuples()
 
-            return peerIdFromBytes((tuples[0][1] as Uint8Array).slice(1))
-          })
+          return peerIdFromBytes((tuples[0][1] as Uint8Array).slice(1))
+        })
 
         this.connectComponents.getRelay().setUsedRelays(relayPeerIds)
       }
@@ -283,13 +280,12 @@ class Listener extends EventEmitter<ListenerEvents> implements InterfaceListener
     // the relay object
     this.connectComponents.getRelay().start()
 
-    this._emitListening()
     this.state = ListenerState.LISTENING
 
     // If node is a PRN (the `--announce` flag is set), disable relay functionality
     // If node is not supposed to have any relayed connection (the `--noRelay` flag is set), disable relay functionality
     if (this.options.announce || this.options.noRelay) {
-      // skip PRN
+      // skip set up of entry nodes usage
       return
     }
 
@@ -298,6 +294,10 @@ class Listener extends EventEmitter<ListenerEvents> implements InterfaceListener
     // Instructs entry node manager to assign to available
     // entry once startup has finished
     this.connectComponents.getEntryNodes().enable()
+
+    // Call the emit listening callback once to ensure the initial data is set
+    // without an event being triggered.
+    this._emitListening()
   }
 
   /**
