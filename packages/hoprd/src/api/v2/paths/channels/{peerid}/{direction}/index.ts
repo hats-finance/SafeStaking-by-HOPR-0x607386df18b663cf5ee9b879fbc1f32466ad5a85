@@ -63,6 +63,7 @@ export async function closeChannel(
     const errString = err instanceof Error ? err.message : err?.toString?.() ?? 'Unknown error'
     log(`failed closing channel`, direction, peerId.toString())
 
+    // TODO: make this independent from the message in the exception
     if (errString.match(/Channel is already closed/)) {
       // @TODO insert receipt
       return { success: true, receipt: /* @fixme */ '0x', channelStatus: ChannelStatus.Closed }

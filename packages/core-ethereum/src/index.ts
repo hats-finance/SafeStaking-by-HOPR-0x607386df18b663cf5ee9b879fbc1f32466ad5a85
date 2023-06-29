@@ -540,7 +540,10 @@ export default class HoprCoreEthereum extends EventEmitter {
       ).serialize()
     )
 
-    console.log(`channelEntry from DB`, c)
+    if (c.status === ChannelStatus.Closed) {
+       throw new Error('Channel is already closed')
+    }
+
     if (c.status !== ChannelStatus.Open && c.status !== ChannelStatus.WaitingForCommitment) {
       throw Error('Channel status is not OPEN or WAITING FOR COMMITMENT')
     }
