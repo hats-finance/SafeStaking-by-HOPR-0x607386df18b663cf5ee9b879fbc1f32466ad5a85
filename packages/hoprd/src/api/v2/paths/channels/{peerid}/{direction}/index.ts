@@ -12,6 +12,7 @@ import {
   PublicKey,
   type DeferType
 } from '@hoprnet/hopr-utils'
+import { log } from 'debug'
 
 const closingRequests = new Map<string, DeferType<void>>()
 
@@ -55,10 +56,12 @@ export async function closeChannel(
   }
 
   try {
+    log(`closing channel`, direction, peerId.toString())
     const { status: channelStatus, receipt } = await node.closeChannel(peerId, direction)
     return { success: true, channelStatus, receipt }
   } catch (err) {
     const errString = err instanceof Error ? err.message : err?.toString?.() ?? 'Unknown error'
+    log(`failed closing channel`, direction, peerId.toString())
 
     if (errString.match(/Channel is already closed/)) {
       // @TODO insert receipt

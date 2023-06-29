@@ -13,6 +13,7 @@ import { PeerId } from '@libp2p/interface-peer-id'
 import { peerIdFromString } from '@libp2p/peer-id'
 import BN from 'bn.js'
 import { STATUS_CODES } from '../../utils.js'
+import { log } from 'debug'
 
 export interface ChannelInfo {
   type: 'outgoing' | 'incoming'
@@ -296,10 +297,13 @@ export async function openChannel(
   }
 
   try {
+    log(`opening channel to `, validationResult.counterparty.toString())
     const { channelId, receipt } = await node.openChannel(pk.to_address(), validationResult.amount)
     return { success: true, channelId: channelId.to_hex(), receipt }
   } catch (err) {
     const errString = err instanceof Error ? err.message : err?.toString?.() ?? STATUS_CODES.UNKNOWN_FAILURE
+
+    log(`failed to open channel to`, validationResult.counterparty.toString(), errString)
 
     if (errString.includes('Channel is already opened')) {
       return { success: false, reason: STATUS_CODES.CHANNEL_ALREADY_OPEN }

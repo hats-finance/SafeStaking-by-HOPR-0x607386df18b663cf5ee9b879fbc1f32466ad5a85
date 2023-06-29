@@ -1448,10 +1448,10 @@ class Hopr extends EventEmitter {
     let txHash: string
     try {
       // if (channel.status === ChannelStatus.Open || channel.status == ChannelStatus.WaitingForCommitment) {
-      // log('initiating closure of channel', channel.get_id().to_hex())
+      log('initiating closure of channel with', counterparty.toString())
       txHash = await HoprCoreEthereum.getInstance().initializeClosure(
-        Packet_PublicKey.deserialize(this.pubKey.serialize(false)).to_address(),
-        Packet_PublicKey.from_peerid_str(counterparty.toString()).to_address()
+        Address.deserialize(this.pubKey.to_address().serialize()),
+        PublicKey.from_peerid_str(counterparty.toString()).to_address()
       )
       // } else {
       //   // verify that we passed the closure waiting period to prevent failing

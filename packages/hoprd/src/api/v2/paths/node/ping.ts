@@ -4,6 +4,7 @@ import type { PeerId } from '@libp2p/interface-peer-id'
 import { peerIdFromString } from '@libp2p/peer-id'
 import { STATUS_CODES } from '../../utils.js'
 import { PEER_METADATA_PROTOCOL_VERSION } from '@hoprnet/hopr-core'
+import { log } from 'debug'
 
 /**
  * Pings another node to check its availability.
@@ -46,11 +47,14 @@ const POST: Operation = [
     const { peerId } = req.body
 
     try {
+      log(`pinging node`, peerId)
       const pingRes = await ping({ peerId, node })
+      log(`ping done`, pingRes.reportedVersion)
       return res.status(200).send(pingRes)
     } catch (err) {
       const errString = err instanceof Error ? err.message : 'Unknown error'
 
+      log(`ping failed`, peerId, errString)
       if (STATUS_CODES[errString]) {
         return res.status(422).send({ status: STATUS_CODES[errString] })
       } else {
