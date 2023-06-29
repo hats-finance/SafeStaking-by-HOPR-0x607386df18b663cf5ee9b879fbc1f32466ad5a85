@@ -16,7 +16,8 @@ import {
   type DeferType,
   PublicKey,
   AccountEntry,
-  create_counter
+  create_counter,
+  channel_status_to_string
 } from '@hoprnet/hopr-utils'
 import {
   Ethereum_AcknowledgedTicket,
@@ -540,12 +541,8 @@ export default class HoprCoreEthereum extends EventEmitter {
       ).serialize()
     )
 
-    if (c.status === ChannelStatus.Closed) {
-       throw new Error('Channel is already closed')
-    }
-
     if (c.status !== ChannelStatus.Open && c.status !== ChannelStatus.WaitingForCommitment) {
-      throw Error('Channel status is not OPEN or WAITING FOR COMMITMENT')
+      throw Error('Channel status is not OPEN or WAITING FOR COMMITMENT, it is: ' + channel_status_to_string(c.status))
     }
     return await this.chain.initiateChannelClosure(dest, (txHash: string) =>
       this.setTxHandler(`channel-updated-${txHash}`, txHash)

@@ -765,9 +765,9 @@ pub mod wasm {
     use std::sync::Arc;
     use stdext::function_name;
     use utils_db::leveldb;
+    use utils_misc::console_log;
     use utils_types::primitives::{Address, AuthorizationToken, Balance, Snapshot};
     use wasm_bindgen::prelude::*;
-    use utils_misc::console_log;
 
     macro_rules! to_iterable {
         ($obj:ident,$x:ty) => {

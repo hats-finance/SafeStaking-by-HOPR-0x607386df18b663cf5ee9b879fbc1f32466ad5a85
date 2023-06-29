@@ -29,7 +29,8 @@ import {
   create_multi_gauge,
   U256,
   random_integer,
-  Hash
+  Hash,
+  channel_status_to_string
 } from '@hoprnet/hopr-utils'
 
 import type { ChainWrapper } from '../ethereum.js'
@@ -892,6 +893,8 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
       new U256(newState.closureTime.toString())
     )
 
+    log(`channel updated - new status: ${channel_status_to_string(numberToChannelStatus(newState.status))}`)
+
     console.log(`on Channel updated - after getting channel`)
 
     let prevState: ChannelEntry
@@ -900,6 +903,10 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     console.log(`on Channel updated - after getting channel`)
     if (channel_entry !== undefined) {
       prevState = ChannelEntry.deserialize(channel_entry.serialize())
+
+      if (prevState) {
+        log(`channel updated - prev status: ${channel_status_to_string(prevState.status)}`)
+      }
     }
 
     assert(lastSnapshot !== undefined)
