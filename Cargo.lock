@@ -940,6 +940,8 @@ dependencies = [
  "console_error_panic_hook",
  "core-crypto",
  "core-ethereum-db",
+ "core-types",
+ "env_logger",
  "futures",
  "hex-literal 0.4.1",
  "js-sys",
@@ -983,17 +985,11 @@ dependencies = [
  "core-ethereum-db",
  "core-ethereum-misc",
  "core-packet",
- "env_logger",
- "futures",
- "futures-lite",
  "js-sys",
- "lazy_static",
  "utils-log",
  "utils-metrics",
  "utils-misc",
  "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
 ]
 
 [[package]]

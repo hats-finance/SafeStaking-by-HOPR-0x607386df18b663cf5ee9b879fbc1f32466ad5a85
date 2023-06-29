@@ -111,9 +111,7 @@ pub struct DB<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> {
 
 impl<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> DB<T> {
     pub fn new(backend: T) -> Self {
-        Self {
-            backend,
-        }
+        Self { backend }
     }
 
     pub async fn contains(&self, key: Key) -> bool {
@@ -134,8 +132,8 @@ impl<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> DB<T> {
         let key: T::Key = key.into();
 
         if self.backend.contains(key.clone()).await {
-            utils_log::debug!("DB contains key");
-            self.backend.get(key.into())
+            self.backend
+                .get(key.into())
                 .await
                 .and_then(|v| {
                     utils_log::debug!("DB got data");
