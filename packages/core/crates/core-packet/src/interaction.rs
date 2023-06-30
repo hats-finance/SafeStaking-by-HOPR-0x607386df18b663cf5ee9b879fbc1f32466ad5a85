@@ -174,6 +174,7 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementInteraction<Db> {
     /// Start processing the incoming acknowledgement queue.
     pub async fn handle_incoming_acknowledgements(&self) {
         while let Ok(payload) = self.incoming_channel.1.recv().await {
+            debug!("got acknowledgement from {}", payload.remote_peer);
             match Acknowledgement::from_bytes(&payload.data) {
                 Ok(ack) => {
                     if let Err(e) = self.handle_acknowledgement(ack, &payload.remote_peer).await {
@@ -198,6 +199,7 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementInteraction<Db> {
         F: futures::Future<Output = core::result::Result<(), String>>,
     {
         while let Ok(payload) = self.outgoing_channel.1.recv().await {
+            debug!("got acknowledgement to {}", payload.remote_peer);
             if let Err(e) = message_transport(payload.data, payload.remote_peer.to_string()).await {
                 error!("failed to send acknowledgement to {}: {e}", payload.remote_peer);
             }
@@ -231,6 +233,7 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementInteraction<Db> {
              a protocol bug or an attacker
         */
 
+        debug!("getting pending acknowledgement");
         let pending = self
             .db
             .read()
@@ -248,6 +251,7 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementInteraction<Db> {
                 ));
             })?;
 
+        debug!("processing pending acknowledgement");
         match pending {
             PendingAcknowledgement::WaitingAsSender => {
                 // No pending ticket, nothing to do.
@@ -381,6 +385,7 @@ where
     }
 
     async fn bump_ticket_index(&self, channel_id: &Hash) -> Result<U256> {
+        debug!("bumping ticket index on {}", channel_id);
         let current_ticket_index = self
             .db
             .read()
@@ -425,7 +430,7 @@ where
 
         let channel_balance = channel.balance.sub(&outstanding_balance);
 
-        info!(
+        debug!(
             "balances {} - {outstanding_balance} = {channel_balance} should >= {amount} in channel open to {}",
             channel.balance,
             channel.destination.to_string()
@@ -470,6 +475,7 @@ where
 
         // Decide whether to create 0-hop or multihop ticket
         let next_peer = PublicKey::from_peerid(&path.hops()[0])?;
+        debug!("creating ticket for {}", next_peer.to_peerid_str());
         let next_ticket = if path.length() == 1 {
             Ticket::new_zero_hop(next_peer, &self.cfg.private_key)
         } else {
@@ -480,6 +486,7 @@ where
         let packet = Packet::new(msg, &path.hops(), &self.cfg.private_key, next_ticket)?;
         match packet.state() {
             PacketState::Outgoing { ack_challenge, .. } => {
+                debug!("created packet for sending via {path}");
                 self.db
                     .write()
                     .await
@@ -516,6 +523,7 @@ where
                             TrySendError::Closed(_) => TransportError("queue is closed".to_string()),
                         })
                 }?;
+                debug!("pushed packet to the outgoing queue, challenge = {}", ack_challenge.to_hex());
 
                 Ok(ack_challenge.clone())
             }
@@ -537,6 +545,7 @@ where
         let previous_peer;
         let next_peer;
 
+        debug!("handling mixed packet");
         match packet.state() {
             PacketState::Outgoing { .. } => return Err(InvalidPacketState),
 
@@ -551,6 +560,7 @@ where
                     return Err(TagReplay);
                 }
 
+                debug!("got final packet with PT: {}", hex::encode(plain_text));
                 // We're the destination of the packet, so emit the packet contents
                 if let Some(emitter) = &self.on_final_packet {
                     // Can we avoid cloning plain_text here ?
@@ -559,6 +569,7 @@ where
                     }
                 }
 
+                debug!("creating acknowledgement for final packet");
                 // And create acknowledgement, but do not fail completely if it fails
                 let ack = packet.create_acknowledgement(&self.cfg.private_key).unwrap();
                 if let Err(e) = ack_interaction
@@ -590,6 +601,7 @@ where
                 let inverse_win_prob = U256::new(INVERSE_TICKET_WIN_PROB);
 
                 // Find the corresponding channel
+                debug!("forwarding packet to {}", next_hop.to_peerid_str());
                 let channel = self
                     .db
                     .read()
@@ -611,16 +623,19 @@ where
                 .await
                 {
                     // Mark as reject and passthrough the error
+                    debug!("packet rejected");
                     self.db.write().await.mark_rejected(&packet.ticket).await?;
                     return Err(e);
                 }
 
+                debug!("setting ticket index");
                 self.db
                     .write()
                     .await
                     .set_current_ticket_index(&channel.get_id().hash(), packet.ticket.index)
                     .await?;
 
+                debug!("storing pending ack");
                 // Store the unacknowledged ticket
                 self.db
                     .write()
@@ -638,6 +653,7 @@ where
                 let path_pos = packet
                     .ticket
                     .get_path_position(U256::new(PRICE_PER_PACKET), inverse_win_prob);
+                debug!("packet path pos {}", path_pos);
 
                 // Create next ticket for the packet
                 next_ticket = if path_pos == 1 {
@@ -651,6 +667,7 @@ where
         }
 
         // Transform the packet for forwarding using the next ticket
+        debug!("doing packet forward transform");
         packet.forward(&self.cfg.private_key, next_ticket)?;
 
         // Forward the packet to the next hop
@@ -658,6 +675,7 @@ where
             .await
             .map_err(|e| TransportError(e))?;
 
+        debug!("creating acknowledgement for forwarded packet");
         // Acknowledge to the previous hop that we forwarded the packet, but do not fail if the acknowledgement fails
         let ack = packet.create_acknowledgement(&self.cfg.private_key).unwrap();
         if let Err(e) = ack_interaction.send_acknowledgement(ack, previous_peer, None).await {
@@ -678,6 +696,7 @@ where
     {
         while let Ok(payload) = self.outgoing_packets.1.recv().await {
             // Send the packet
+            debug!("handling outgoing packet to {}", payload.remote_peer);
             if let Err(e) = message_transport(payload.data, payload.remote_peer.to_string()).await {
                 error!("failed to send packet to {}: {e}", payload.remote_peer);
             }
@@ -697,6 +716,7 @@ where
     {
         while let Ok(payload) = self.incoming_packets.1.recv().await {
             // Add some random delay via mixer
+            debug!("handling incoming packet from {}", payload.remote_peer);
             let mixed_packet = self.mixer.mix(payload).await;
             match Packet::from_bytes(&mixed_packet.data, &self.cfg.private_key, &mixed_packet.remote_peer) {
                 Ok(packet) => {
@@ -720,6 +740,7 @@ where
     /// If `wait` is `false` and the RX queue is full, the method fails with `Err(Retry)`. At this point, the
     /// caller can decide whether to discard the packet.
     pub async fn received_packet(&self, payload: Payload, wait: bool) -> Result<()> {
+        debug!("enqueuing received packet from {}", payload.remote_peer);
         if wait {
             self.incoming_packets
                 .0
@@ -1477,7 +1498,7 @@ pub mod wasm {
     use std::sync::Arc;
     use std::time::Duration;
     use utils_db::leveldb::LevelDbShim;
-    use utils_log::error;
+    use utils_log::{debug, error};
     use utils_misc::ok_or_jserr;
     use utils_misc::utils::wasm::JsResult;
     use utils_types::traits::BinarySerializable;
@@ -1589,6 +1610,7 @@ pub mod wasm {
         }
 
         pub async fn received_acknowledgement(&self, payload: Payload) -> JsResult<()> {
+            debug!("received acknowledgement from {}", payload.remote_peer);
             ok_or_jserr!(self.w.received_acknowledgement(payload, false).await)
         }
 
@@ -1598,6 +1620,7 @@ pub mod wasm {
             dest: String,
             timeout_secs: u64,
         ) -> JsResult<()> {
+            debug!("sending acknowledgement");
             ok_or_jserr!(
                 self.w
                     .send_acknowledgement(
@@ -1610,11 +1633,13 @@ pub mod wasm {
         }
 
         pub async fn handle_incoming_acknowledgements(&self) {
+            debug!("start handling incoming acks");
             self.w.handle_incoming_acknowledgements().await
         }
 
         pub async fn handle_outgoing_acknowledgements(&self, transport_cb: &js_sys::Function) {
             let msg_transport = create_transport_closure!(transport_cb);
+            debug!("start handling outgoing acks");
             self.w.handle_outgoing_acknowledgements(&msg_transport).await
         }
 
@@ -1657,10 +1682,12 @@ pub mod wasm {
         }
 
         pub async fn received_packet(&self, payload: Payload) -> JsResult<()> {
+            debug!("received packet from {}", payload.remote_peer);
             ok_or_jserr!(self.w.received_packet(payload, false).await)
         }
 
         pub async fn send_packet(&self, msg: &[u8], path: Path, timeout_secs: u64) -> JsResult<HalfKeyChallenge> {
+            debug!("sending packet {} via path {}", hex::encode(msg), path);
             ok_or_jserr!(
                 self.w
                     .send_packet(msg, path, Some(Duration::from_secs(timeout_secs)))
@@ -1670,6 +1697,7 @@ pub mod wasm {
 
         pub async fn handle_outgoing_packets(&self, transport_cb: &js_sys::Function) {
             let msg_transport = create_transport_closure!(transport_cb);
+            debug!("start handling outgoing packets");
             self.w.handle_outgoing_packets(&msg_transport).await
         }
 
@@ -1679,6 +1707,7 @@ pub mod wasm {
             transport_cb: &js_sys::Function,
         ) {
             let msg_transport = create_transport_closure!(transport_cb);
+            debug!("start handling incoming packets");
             self.w
                 .handle_incoming_packets(ack_interaction.w.clone(), &msg_transport)
                 .await

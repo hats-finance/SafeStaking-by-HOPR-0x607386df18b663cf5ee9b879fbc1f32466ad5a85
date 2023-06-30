@@ -613,12 +613,17 @@ class Hopr extends EventEmitter {
       `/hopr/${this.network.id}/msg`
     ]
 
-    const packetInteractionSendMsg = (msg: Uint8Array, dest: string): Promise<void> =>
-      sendMessage(peerIdFromString(dest), packetProtocols, msg, false)
+    const packetInteractionSendMsg = (msg: Uint8Array, dest: string): Promise<void> => {
+      log(`transport sending packet ->`)
+      return sendMessage(peerIdFromString(dest), packetProtocols, msg, false)
+    }
 
-    const acknowledgementInteractionSendMsg = (msg: Uint8Array, dest: string): Promise<void> =>
-      sendMessage(peerIdFromString(dest), acknowledgementProtocols, msg, false)
+    const acknowledgementInteractionSendMsg = (msg: Uint8Array, dest: string): Promise<void> => {
+      log(`transport sending ack ->`)
+      return sendMessage(peerIdFromString(dest), acknowledgementProtocols, msg, false)
+    }
 
+    log(`starting interactions`)
     await Promise.all([
       this.forward.handle_incoming_packets(this.acknowledgements, packetInteractionSendMsg),
       this.forward.handle_outgoing_packets(packetInteractionSendMsg),
@@ -1074,12 +1079,14 @@ class Hopr extends EventEmitter {
     if (intermediatePath != undefined) {
       // Validate the manually specified intermediate path
       try {
+        log(`validating intermediate path`)
         await this.validateIntermediatePath(intermediatePath)
       } catch (e) {
         metric_sentMessageFailCount.increment()
         throw e
       }
     } else {
+      log(`building intermediate path`)
       intermediatePath = await this.getIntermediateNodes(PublicKey.from_peerid_str(destination.toString()), hops)
 
       if (intermediatePath == null || !intermediatePath.length) {
@@ -1088,9 +1095,11 @@ class Hopr extends EventEmitter {
       }
     }
 
+    log(`creating path from hops...`)
     const path = new Path([...intermediatePath.map((pk) => pk.to_peerid_str()), destination.toString()])
     metric_pathLength.observe(path.length())
 
+    log(`constructed path for packet ${path.to_string()} to ${destination.toString()}`)
     return (await this.forward.send_packet(msg, path, PACKET_QUEUE_TIMEOUT_SECONDS)).to_hex()
   }
 

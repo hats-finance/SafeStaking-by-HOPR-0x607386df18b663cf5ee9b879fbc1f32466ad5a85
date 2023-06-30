@@ -763,9 +763,8 @@ pub mod wasm {
     use core_types::acknowledgement::AcknowledgedTicket;
     use core_types::channels::{ChannelEntry, Ticket};
     use std::sync::Arc;
-    use stdext::function_name;
     use utils_db::leveldb;
-    use utils_misc::console_log;
+    use utils_misc::{check_lock_read, check_lock_write, console_log};
     use utils_types::primitives::{Address, AuthorizationToken, Balance, Snapshot};
     use wasm_bindgen::prelude::*;
 
@@ -845,27 +844,7 @@ pub mod wasm {
         }
     }
 
-    macro_rules! check_lock_read {
-        { $($rest:tt)* } => {
-            let r = {
-                console_log!("{} >>> READ ", function_name!());
-                $($rest)*
-            };
-            console_log!("{} <<< READ ", function_name!());
-            r
-        };
-    }
 
-    macro_rules! check_lock_write {
-        { $($rest:tt)* } => {
-            let r = {
-                console_log!("{} >>> WRITE ", function_name!());
-                $($rest)*
-            };
-            console_log!("{} <<< WRITE ", function_name!());
-            r
-        };
-    }
     
     #[wasm_bindgen]
     impl Database {

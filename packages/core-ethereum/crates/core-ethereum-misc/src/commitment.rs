@@ -60,13 +60,17 @@ where
     C: Fn(Hash) -> F,
     F: futures::Future<Output = Option<String>>,
 {
-    let intermediates = iterate_hash(initial_commitment_seed, TOTAL_ITERATIONS, DB_ITERATION_BLOCK_SIZE);
+    let intermediates = iterate_hash(initial_commitment_seed, TOTAL_ITERATIONS, DB_ITERATION_BLOCK_SIZE).await;
 
     db.store_hash_intermediaries(channel_id, &intermediates).await?;
+    debug!("stored new hash intermediaries for channel id {channel_id}");
+
     let current = Hash::new(&intermediates.hash);
-    db.set_current_commitment(channel_id, &current)
-        .then(|_| committer(current))
-        .await;
+    db.set_current_commitment(channel_id, &current).await?;
+    match committer(current).await {
+        None => warn!("chain commitment setter did not return any value"),
+        Some(s) => info!("chain commitment set {s}")
+    }
 
     info!("commitment chain initialized for {channel_id}");
     Ok(())
@@ -237,7 +241,7 @@ pub mod wasm {
     use core_ethereum_db::db::wasm::Database;
     use js_sys::Uint8Array;
     use utils_log::error;
-    use utils_misc::ok_or_jserr;
+    use utils_misc::{check_lock_read, check_lock_write, console_log, ok_or_jserr};
     use utils_misc::utils::wasm::JsResult;
     use utils_types::traits::BinarySerializable;
     use wasm_bindgen::prelude::wasm_bindgen;
@@ -253,46 +257,48 @@ pub mod wasm {
         set_commitment: &js_sys::Function, // async (Uint8Array) => String
     ) -> JsResult<()> {
         let val = db.as_ref_counted();
-        //let r = {
-        let mut g = val.write().await;
-        //console_log!("++++ initializing commitment preimage");
-        ok_or_jserr!(
-            super::initialize_commitment(&mut *g, private_key, channel_info, |commitment: Hash| async move {
-                let this = JsValue::null();
-                let hash: JsValue = Uint8Array::from(commitment.to_bytes().as_ref()).into();
-                match set_commitment.call1(&this, &hash) {
-                    Ok(r) => {
-                        let promise = js_sys::Promise::from(r);
-                        wasm_bindgen_futures::JsFuture::from(promise)
-                            .await
-                            .map_err(|e| error!("could not set commitment {:?}", e.as_string()))
-                            .map(|v| v.as_string().unwrap())
-                            .ok()
+        console_log!("++++ initializing commitment preimage");
+        check_lock_write! {
+            let mut g = val.write().await;
+            ok_or_jserr!(
+                super::initialize_commitment(&mut *g, private_key, channel_info, |commitment: Hash| async move {
+                    let this = JsValue::null();
+                    let hash: JsValue = Uint8Array::from(commitment.to_bytes().as_ref()).into();
+                    match set_commitment.call1(&this, &hash) {
+                        Ok(r) => {
+                            let promise = js_sys::Promise::from(r);
+                            wasm_bindgen_futures::JsFuture::from(promise)
+                                .await
+                                .map_err(|e| error!("could not set commitment {:?}", e.as_string()))
+                                .map(|v| v.as_string().unwrap())
+                                .ok()
+                        }
+                        Err(e) => {
+                            error!("cannot call set commitment {:?}", e.as_string());
+                            None
+                        }
                     }
-                    Err(e) => {
-                        error!("not call set commitment {:?}", e.as_string());
-                        None
-                    }
-                }
-            })
-            .await
-        )
-        //};
-        //console_log!("==== initializing commitment preimage");
-        //r
+                })
+                .await
+            )
+        }
     }
 
     #[wasm_bindgen]
     pub async fn find_commitment_preimage(db: &Database, channel_id: &Hash) -> JsResult<Hash> {
         let val = db.as_ref_counted();
-        let mut g = val.write().await;
-        ok_or_jserr!(super::find_commitment_preimage(&mut *g, channel_id).await)
+        check_lock_read! {
+            let g = val.read().await;
+            ok_or_jserr!(super::find_commitment_preimage(&*g, channel_id).await)
+        }
     }
 
     #[wasm_bindgen]
     pub async fn bump_commitment(db: &Database, channel_id: &Hash, new_commitment: &Hash) -> JsResult<()> {
         let val = db.as_ref_counted();
-        let mut g = val.write().await;
-        ok_or_jserr!(super::bump_commitment(&mut *g, channel_id, new_commitment).await)
+        check_lock_write! {
+            let mut g = val.write().await;
+            ok_or_jserr!(super::bump_commitment(&mut *g, channel_id, new_commitment).await)
+        }
     }
 }

@@ -948,6 +948,7 @@ dependencies = [
  "libp2p-identity",
  "mockall",
  "rusty-leveldb",
+ "stdext",
  "thiserror",
  "utils-db",
  "utils-log",

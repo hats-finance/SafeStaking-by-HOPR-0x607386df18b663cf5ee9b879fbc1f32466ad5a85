@@ -28,6 +28,7 @@ const POST: Operation = [
     }
 
     try {
+      log(`sending message ${message} to ${recipient} via ${path.map((p) => p.to_peerid_str()).join(",")}`)
       let ackChallenge = await req.context.node.sendMessage(message, recipient, path, hops)
       metric_successfulSendApiCalls.increment()
       return res.status(202).json(ackChallenge)

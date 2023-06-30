@@ -61,4 +61,28 @@ pub mod wasm {
     macro_rules! console_log {
         ($($t:tt)*) => (utils_misc::utils::wasm::log(&format_args!($($t)*).to_string()))
     }
+
+    #[macro_export]
+    macro_rules! check_lock_read {
+        { $($rest:tt)* } => {
+            let r = {
+                console_log!("{} >>> READ ", stdext::function_name!());
+                $($rest)*
+            };
+            console_log!("{} <<< READ ", stdext::function_name!());
+            r
+        };
+    }
+
+    #[macro_export]
+    macro_rules! check_lock_write {
+        { $($rest:tt)* } => {
+            let r = {
+                console_log!("{} >>> WRITE ", stdext::function_name!());
+                $($rest)*
+            };
+            console_log!("{} <<< WRITE ", stdext::function_name!());
+            r
+        };
+    }
 }

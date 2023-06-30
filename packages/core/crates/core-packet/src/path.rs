@@ -45,7 +45,7 @@ impl Display for Path {
         for peer in &self.hops {
             write!(f, "{peer}->")?;
         }
-        write!(f, " ]")
+        write!(f, " ] ({} hops)", self.length())
     }
 }
 
@@ -87,6 +87,11 @@ pub mod wasm {
                 .into_iter()
                 .map(|p| PeerId::from_str(&p.as_string().unwrap()).map_err(|_| Other(ParseError)))
                 .collect::<Result<Vec<PeerId>>>())?))
+        }
+
+        #[wasm_bindgen(js_name = "to_string")]
+        pub fn _to_string(&self) -> String {
+            self.to_string()
         }
     }
 }
