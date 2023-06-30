@@ -17,6 +17,7 @@ wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys"]
 
 [dependencies]
 aes = "0.8"
+async-std = "1"
 blake2 = "0.10"
 chacha20 = "0.9"
 ctr = "0.9"
