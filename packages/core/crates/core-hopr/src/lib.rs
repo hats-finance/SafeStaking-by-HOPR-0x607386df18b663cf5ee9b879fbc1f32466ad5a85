@@ -1,3 +1,5 @@
+pub mod state;
+
 #[cfg(feature = "wasm")]
 pub mod wasm {
     use utils_log::logger::wasm::JsLogger;
