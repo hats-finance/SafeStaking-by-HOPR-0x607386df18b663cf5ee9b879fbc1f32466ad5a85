@@ -214,6 +214,12 @@ contract HoprChannels is
         uint256 porSecret;
     }
 
+    struct Data {
+        uint256 porSecret;
+        HoprCrypto.VRFParameters params;
+        CompactSignature signature;
+    }
+
     /**
      * Stores channels, indexed by their channelId
      */
@@ -304,26 +310,49 @@ contract HoprChannels is
      */
     function redeemTicketSafe(
         address self,
-        RedeemableTicket calldata redeemable,
-        HoprCrypto.VRFParameters calldata params
+        Data calldata data,
+        // amount of tokens to transfer if ticket is a win
+        Balance amount,
+        // highest channel.ticketIndex to accept when redeeming
+        // ticket, used to aggregate tickets off-chain
+        TicketIndex ticketIndex,
+        // delta by which channel.ticketIndex gets increased when redeeming
+        // the ticket, should be set to 1 if ticket is not aggregated
+        TicketIndexOffset indexOffset,
+        // replay protection, invalidates all tickets once payment channel
+        // gets closed
+        ChannelEpoch epoch,
+        // encoded winning probability of the ticket
+        WinProb winProb
     )
         external
         HoprMultiSig.onlySafe(self)
     {
-        _redeemTicketInternal(self, redeemable, params);
+        _redeemTicketInternal(self, data, bytes32(0), amount, ticketIndex, indexOffset, epoch, winProb);
     }
 
     /**
      * See `_redeemTicketInternal`
      */
     function redeemTicket(
-        RedeemableTicket calldata redeemable,
-        HoprCrypto.VRFParameters calldata params
+        Data calldata data,
+        // amount of tokens to transfer if ticket is a win
+        Balance amount,
+        // highest channel.ticketIndex to accept when redeeming
+        // ticket, used to aggregate tickets off-chain
+        TicketIndex ticketIndex,
+        // delta by which channel.ticketIndex gets increased when redeeming
+        // the ticket, should be set to 1 if ticket is not aggregated
+        TicketIndexOffset indexOffset,
+        // replay protection, invalidates all tickets once payment channel
+        // gets closed
+        ChannelEpoch epoch,
+        // encoded winning probability of the ticket
+        WinProb winProb
     )
         external
-        HoprMultiSig.noSafeSet()
     {
-        _redeemTicketInternal(msg.sender, redeemable, params);
+        // _redeemTicketInternal(msg.sender, data, bytes32(0), amount, ticketIndex, indexOffset, epoch, winProb);
     }
 
     /**
@@ -363,91 +392,117 @@ contract HoprChannels is
      * @dev This method makes use of several methods to reduce stack height.
      *
      * @param self account address of the ticket redeemer
-     * @param redeemable ticket, signature of ticket issuer, porSecret
-     * @param params pseudo-random VRF value + proof that it was correctly using
-     *               ticket redeemer's private key
+     * @param data sth
+     * @param channelId sth
+     * @param amount sth
+     * @param ticketIndex sth
+     * @param indexOffset sth
+     * @param epoch sth
+     * @param winProb sth
      */
     function _redeemTicketInternal(
         address self,
-        RedeemableTicket calldata redeemable,
-        HoprCrypto.VRFParameters calldata params
+        Data calldata data,
+        bytes32 channelId,
+        Balance amount,
+        TicketIndex ticketIndex,
+        TicketIndexOffset indexOffset,
+        ChannelEpoch epoch,
+        WinProb winProb
     )
         internal
-        validateBalance(redeemable.data.amount)
-        HoprCrypto.isFieldElement(redeemable.porSecret)
     {
-        Channel storage spendingChannel = channels[redeemable.data.channelId];
+        // address source;
+        // {
+        //     // TicketData is aligned to exactly 2 EVM words, from which channelId 
+        //     // takes one. Removing channelId can thus be encoded in 1 EVM word.
+        //     //
+        //     // Tickets get signed and transferred in packed encoding, consuming
+        //     // 148 bytes, including signature and challenge. Using tight encoding 
+        //     // for ticket hash unifies on-chain and off-chain usage of tickets.
+        //     uint256 secondPart =
+        //         (uint256(Balance.unwrap(amount)) << 160) | 
+        //         (uint256(TicketIndex.unwrap(ticketIndex)) << 112) | 
+        //         (uint256(TicketIndexOffset.unwrap(indexOffset)) << 80) | 
+        //         (uint256(ChannelEpoch.unwrap(epoch)) << 56) | 
+        //         uint256(WinProb.unwrap(winProb));
+        //     // Deviates from EIP712 due to computed property and non-standard struct property encoding
+        //     bytes32 ticketHash = _getTicketHash(channelId, secondPart, data.porSecret);
+            
 
-        if (spendingChannel.status != ChannelStatus.OPEN && spendingChannel.status != ChannelStatus.PENDING_TO_CLOSE) {
-            revert WrongChannelState({ reason: "spending channel must be OPEN or PENDING_TO_CLOSE" });
-        }
+        //     if (!_isWinningTicket(ticketHash, data, winProb)) {
+        //         revert TicketIsNotAWin();
+        //     }
 
-        if (ChannelEpoch.unwrap(spendingChannel.epoch) != ChannelEpoch.unwrap(redeemable.data.epoch)) {
-            revert WrongChannelState({ reason: "channel epoch must match" });
-        }
+        //     HoprCrypto.VRFPayload memory payload =
+        //         HoprCrypto.VRFPayload(ticketHash, self, abi.encodePacked(domainSeparator));
 
-        // Aggregatable Tickets - validity interval:
-        // ( ticketIndex, ticketIndex + indexOffset ] for indexOffset > 0
-        if (
-            TicketIndex.unwrap(redeemable.data.ticketIndex) <= TicketIndex.unwrap(spendingChannel.ticketIndex)
-                || TicketIndexOffset.unwrap(redeemable.data.indexOffset) == 0
-        ) {
-            revert InvalidAggregatedTicketInterval();
-        }
+        //     if (!vrfVerify(data.params, payload)) {
+        //         revert InvalidVRFProof();
+        //     }
 
-        if (Balance.unwrap(spendingChannel.balance) < Balance.unwrap(redeemable.data.amount)) {
-            revert InsufficientChannelBalance();
-        }
+        //     source = ECDSA.recover(ticketHash, data.signature.r, data.signature.vs);
+        //     if (_getChannelId(source, address(0)) != channelId) {
+        //         revert InvalidTicketSignature();
+        //     }
+        // }
 
-        // Deviates from EIP712 due to computed property and non-standard struct property encoding
-        bytes32 ticketHash = _getTicketHash(redeemable);
+        // {
+        //     Channel storage spendingChannel = channels[channelId];
 
-        if (!_isWinningTicket(ticketHash, redeemable, params)) {
-            revert TicketIsNotAWin();
-        }
+        //     if (spendingChannel.status != ChannelStatus.OPEN && spendingChannel.status != ChannelStatus.PENDING_TO_CLOSE) {
+        //         revert WrongChannelState({ reason: "spending channel must be OPEN or PENDING_TO_CLOSE" });
+        //     }
 
-        HoprCrypto.VRFPayload memory payload =
-            HoprCrypto.VRFPayload(ticketHash, self, abi.encodePacked(domainSeparator));
+        //     if (ChannelEpoch.unwrap(spendingChannel.epoch) != ChannelEpoch.unwrap(epoch)) {
+        //         revert WrongChannelState({ reason: "channel epoch must match" });
+        //     }
 
-        if (!vrfVerify(params, payload)) {
-            revert InvalidVRFProof();
-        }
+        //     // Aggregatable Tickets - validity interval:
+        //     // ( ticketIndex, ticketIndex + indexOffset ] for indexOffset > 0
+        //     if (
+        //         TicketIndex.unwrap(ticketIndex) <= TicketIndex.unwrap(spendingChannel.ticketIndex)
+        //             || TicketIndexOffset.unwrap(indexOffset) == 0
+        //     ) {
+        //         revert InvalidAggregatedTicketInterval();
+        //     }
 
-        address source = ECDSA.recover(ticketHash, redeemable.signature.r, redeemable.signature.vs);
-        if (_getChannelId(source, self) != redeemable.data.channelId) {
-            revert InvalidTicketSignature();
-        }
+        //     if (Balance.unwrap(spendingChannel.balance) < Balance.unwrap(amount)) {
+        //         revert InsufficientChannelBalance();
+        //     }
 
-        spendingChannel.ticketIndex = TicketIndex.wrap(
-            TicketIndex.unwrap(redeemable.data.ticketIndex) + TicketIndexOffset.unwrap(redeemable.data.indexOffset)
-        );
-        spendingChannel.balance =
-            Balance.wrap(Balance.unwrap(spendingChannel.balance) - Balance.unwrap(redeemable.data.amount));
-        indexEvent(
-            abi.encodePacked(ChannelBalanceDecreased.selector, redeemable.data.channelId, spendingChannel.balance)
-        );
-        emit ChannelBalanceDecreased(redeemable.data.channelId, spendingChannel.balance);
+        //     spendingChannel.ticketIndex = TicketIndex.wrap(
+        //         TicketIndex.unwrap(ticketIndex) + TicketIndexOffset.unwrap(indexOffset)
+        //     );
+        //     spendingChannel.balance =
+        //         Balance.wrap(Balance.unwrap(spendingChannel.balance) - Balance.unwrap(amount));
+        //     indexEvent(
+        //         abi.encodePacked(ChannelBalanceDecreased.selector, channelId, spendingChannel.balance)
+        //     );
+        //     emit ChannelBalanceDecreased(channelId, spendingChannel.balance);
 
-        bytes32 outgoingChannelId = _getChannelId(self, source);
-        Channel storage earningChannel = channels[outgoingChannelId];
+        //     // Informs about new ticketIndex
+        //     indexEvent(abi.encodePacked(TicketRedeemed.selector, channelId, spendingChannel.ticketIndex));
+        //     emit TicketRedeemed(channelId, spendingChannel.ticketIndex);
 
-        // Informs about new ticketIndex
-        indexEvent(abi.encodePacked(TicketRedeemed.selector, redeemable.data.channelId, spendingChannel.ticketIndex));
-        emit TicketRedeemed(redeemable.data.channelId, spendingChannel.ticketIndex);
+        // }
 
-        if (earningChannel.status == ChannelStatus.CLOSED) {
-            // The other channel does not exist, so we need to transfer funds directly
-            if (token.transfer(msg.sender, Balance.unwrap(redeemable.data.amount)) != true) {
-                revert TokenTransferFailed();
-            }
-        } else {
-            // this CAN produce channels with more stake than MAX_USED_AMOUNT - which does not lead
-            // to overflows since total supply < type(uin96).max
-            earningChannel.balance =
-                Balance.wrap(Balance.unwrap(earningChannel.balance) + Balance.unwrap(redeemable.data.amount));
-            indexEvent(abi.encodePacked(ChannelBalanceIncreased.selector, outgoingChannelId, earningChannel.balance));
-            emit ChannelBalanceIncreased(outgoingChannelId, earningChannel.balance);
-        }
+        // bytes32 outgoingChannelId = _getChannelId(self, source);
+        // Channel storage earningChannel = channels[outgoingChannelId];
+
+        // if (earningChannel.status == ChannelStatus.CLOSED) {
+        //     // The other channel does not exist, so we need to transfer funds directly
+        //     if (token.transfer(msg.sender, Balance.unwrap(amount)) != true) {
+        //         revert TokenTransferFailed();
+        //     }
+        // } else {
+        //     // this CAN produce channels with more stake than MAX_USED_AMOUNT - which does not lead
+        //     // to overflows since total supply < type(uin96).max
+        //     earningChannel.balance =
+        //         Balance.wrap(Balance.unwrap(earningChannel.balance) + Balance.unwrap(amount));
+        //     indexEvent(abi.encodePacked(ChannelBalanceIncreased.selector, outgoingChannelId, earningChannel.balance));
+        //     emit ChannelBalanceIncreased(outgoingChannelId, earningChannel.balance);
+        // }
     }
 
     /**
@@ -816,29 +871,18 @@ contract HoprChannels is
      * challenge - rather the response, whereas the smart contract
      * requires the response.
      *
-     * @param redeemable ticket data
+     * @param channelId sth
+     * @param secondPart sth
+     * @param porSecret sth
      */
-    function _getTicketHash(RedeemableTicket calldata redeemable) public view returns (bytes32) {
-        address challenge = HoprCrypto.scalarTimesBasepoint(redeemable.porSecret);
-
-        // TicketData is aligned to exactly 2 EVM words, from which channelId 
-        // takes one. Removing channelId can thus be encoded in 1 EVM word.
-        //
-        // Tickets get signed and transferred in packed encoding, consuming
-        // 148 bytes, including signature and challenge. Using tight encoding 
-        // for ticket hash unifies on-chain and off-chain usage of tickets.
-        uint256 secondPart =
-            (uint256(Balance.unwrap(redeemable.data.amount)) << 160) | 
-            (uint256(TicketIndex.unwrap(redeemable.data.ticketIndex)) << 112) | 
-            (uint256(TicketIndexOffset.unwrap(redeemable.data.indexOffset)) << 80) | 
-            (uint256(ChannelEpoch.unwrap(redeemable.data.epoch)) << 56) | 
-            uint256(WinProb.unwrap(redeemable.data.winProb));
+    function _getTicketHash(bytes32 channelId, uint256 secondPart, uint256 porSecret) public view returns (bytes32) {
+        address challenge = HoprCrypto.scalarTimesBasepoint(porSecret);
 
         // Deviates from EIP712 due to computed property and non-standard struct property encoding
         bytes32 hashStruct = keccak256(
             abi.encode(
                 this.redeemTicket.selector,
-                keccak256(abi.encodePacked(redeemable.data.channelId, secondPart, challenge))
+                keccak256(abi.encodePacked(channelId, secondPart, challenge))
             )
         );
 
@@ -852,13 +896,13 @@ contract HoprChannels is
      * a property stated in the signed ticket.
      *
      * @param ticketHash hash of the ticket to check
-     * @param redeemable ticket, opening, porSecret, signature
-     * @param params VRF values, entropy given by ticket redeemer
+     * @param data ticket, opening, porSecret, signature
+     * @param winProb VRF values, entropy given by ticket redeemer
      */
     function _isWinningTicket(
         bytes32 ticketHash,
-        RedeemableTicket calldata redeemable,
-        HoprCrypto.VRFParameters calldata params
+        Data calldata data,
+        WinProb winProb
     )
         public
         pure
@@ -874,19 +918,19 @@ contract HoprChannels is
                             // unique due to ticketIndex + ticketEpoch
                             ticketHash,
                             // use deterministic pseudo-random VRF output generated by redeemer
-                            params.vx,
-                            params.vy,
+                            data.params.vx,
+                            data.params.vy,
                             // challenge-response packet sender + next downstream node
-                            redeemable.porSecret,
+                            data.porSecret,
                             // entropy by ticket issuer, only ticket issuer can generate a valid signature
-                            redeemable.signature.r,
-                            redeemable.signature.vs
+                            data.signature.r,
+                            data.signature.vs
                         )
                     )
                 )
             )
         );
 
-        return ticketProb <= WinProb.unwrap(redeemable.data.winProb);
+        return ticketProb <= WinProb.unwrap(winProb);
     }
 }

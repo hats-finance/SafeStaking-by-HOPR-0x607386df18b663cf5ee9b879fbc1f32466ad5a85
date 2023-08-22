@@ -32,20 +32,13 @@ abstract contract CryptoUtils is Test, HoprCrypto, SECP2561k {
     )
         internal
         view
-        returns (HoprChannels.RedeemableTicket memory redeemable, VRFParameters memory vrf)
+        returns (bytes memory payload, bytes32 channelId)
     {
-        bytes32 channelId = _getChannelId(args.src, args.dest);
+        channelId = _getChannelId(args.src, args.dest);
 
-        HoprChannels.TicketData memory ticketData = HoprChannels.TicketData(
-            channelId,
-            HoprChannels.Balance.wrap(uint96(args.amount)),
-            HoprChannels.TicketIndex.wrap(uint48(args.maxTicketIndex)),
-            HoprChannels.TicketIndexOffset.wrap(uint32(args.indexOffset)),
-            HoprChannels.ChannelEpoch.wrap(uint24(args.epoch)),
-            HoprChannels.WinProb.wrap(uint56(args.winProb))
-        );
-
-        address challenge = HoprCrypto.scalarTimesBasepoint(args.porSecret);
+        bytes32 ticketHash;
+        {
+            address challenge = HoprCrypto.scalarTimesBasepoint(args.porSecret);
 
         uint256 secondPart =
             (args.amount << 160) | 
@@ -62,7 +55,8 @@ abstract contract CryptoUtils is Test, HoprCrypto, SECP2561k {
             )
         );
 
-        bytes32 ticketHash = keccak256(abi.encodePacked(bytes1(0x19), bytes1(0x01), args.dst, hashStruct));
+            ticketHash = keccak256(abi.encodePacked(bytes1(0x19), bytes1(0x01), args.dst, hashStruct));
+        }
 
         CompactSignature memory sig;
 
@@ -72,9 +66,31 @@ abstract contract CryptoUtils is Test, HoprCrypto, SECP2561k {
             sig = toCompactSignature(v, r, s);
         }
 
-        redeemable = HoprChannels.RedeemableTicket(ticketData, sig, args.porSecret);
+        HoprCrypto.VRFParameters memory vrf = getVRFParameters(args.privKeyB, abi.encodePacked(args.dst), ticketHash);
 
-        vrf = getVRFParameters(args.privKeyB, abi.encodePacked(args.dst), ticketHash);
+        payload = abi.encodePacked(
+            args.porSecret,
+            vrf.vx,
+            vrf.vy,
+            vrf.s,
+            vrf.h,
+            vrf.sBx,
+            vrf.sBy,
+            vrf.hVx,
+            vrf.hVy, 
+            sig.r,
+            sig.vs);
+
+        // Stack height optimization
+        payload = abi.encodePacked(
+            payload,
+            channelId, 
+            uint96(args.amount),
+            uint48(args.maxTicketIndex),
+            uint32(args.indexOffset),
+            uint24(args.epoch),
+            uint56(args.winProb)
+        );
     }
 
     function toCompactSignature(
