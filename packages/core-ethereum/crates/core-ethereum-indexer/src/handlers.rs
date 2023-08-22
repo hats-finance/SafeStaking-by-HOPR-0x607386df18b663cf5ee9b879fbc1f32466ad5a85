@@ -30,7 +30,7 @@ use ethnum::u256;
 use multiaddr::Multiaddr;
 use serde::Deserialize;
 use std::str::FromStr;
-use utils_log::{debug, info};
+use utils_log::{debug, error, info, warn};
 use utils_types::primitives::{Address, Balance, BalanceType, Snapshot, U256};
 
 /// Holds addresses of deployed HOPR contracts
@@ -383,6 +383,8 @@ where
                 db.sub_hopr_balance(&Balance::new(value, BalanceType::HOPR), snapshot)
                     .await?;
             }
+        } else {
+            warn!("unhandled token event received");
         }
         Ok(())
     }
@@ -448,6 +450,7 @@ where
                 // TODO: implement this
             }
             _ => {
+                warn!("unhandled network registry event received");
                 // don't care. Not important to HOPR
             }
         }
@@ -494,7 +497,7 @@ where
     {
         match HoprNodeManagementModuleEvents::decode_log(log)? {
             _ => {
-                info!("received some node management module event");
+                warn!("received some node management module event");
                 // don't care at the moment
             }
         }
@@ -527,6 +530,7 @@ where
         } else if address.eq(&self.addresses.node_management_module) {
             self.on_node_management_module_event(db, log, snapshot).await?
         } else {
+            error!("unknown event {address} address");
             return Err(CoreEthereumIndexerError::UnknownContract(*address));
         }
         Ok(())
@@ -1605,15 +1609,15 @@ pub mod wasm {
 
             let decoded_data = ok_or_jserr!(decode(data))?;
 
-            let val = db.as_ref_counted();
-            let mut g = val.write().await;
-
             let mut decoded_topics: Vec<H256> = vec![];
 
             for topic in topics.iter() {
                 let decoded_topic = ok_or_jserr!(decode(String::from(JsString::from(topic))))?;
                 decoded_topics.push(H256::from_slice(&decoded_topic));
             }
+
+            let val = db.as_ref_counted();
+            let mut g = val.write().await;
 
             self.w
                 .on_event(
