@@ -1,15 +1,7 @@
 import BN from 'bn.js'
-import { defer } from '@hoprnet/hopr-utils'
+import { defer, Address, generate_channel_id, channel_status_to_string, ChannelStatus } from '@hoprnet/hopr-utils'
 
 import { STATUS_CODES } from '../../utils.js'
-import {
-  hoprd_misc_initialize_crate,
-  generate_channel_id,
-  channel_status_to_string,
-  ChannelStatus,
-  Address
-} from '../../../../../lib/hoprd_misc.js'
-hoprd_misc_initialize_crate()
 
 import type { Operation } from 'express-openapi'
 import type Hopr from '@hoprnet/hopr-core'
@@ -270,7 +262,10 @@ export async function openChannel(
     return { success: false, reason: validationResult.reason }
   }
 
-  const channelId = generate_channel_id(node.getEthereumAddress(), validationResult.counterparty)
+  const channelId = generate_channel_id(
+    node.getEthereumAddress(),
+    validationResult.counterparty
+  )
 
   let openingRequest = openingRequests.get(channelId.to_hex())
 
@@ -282,7 +277,10 @@ export async function openChannel(
   }
 
   try {
-    const { channelId, receipt } = await node.openChannel(validationResult.counterparty, validationResult.amount)
+    const { channelId, receipt } = await node.openChannel(
+      validationResult.counterparty,
+      validationResult.amount
+    )
     return { success: true, channelId: channelId.to_hex(), receipt }
   } catch (err) {
     const errString = err instanceof Error ? err.message : err?.toString?.() ?? STATUS_CODES.UNKNOWN_FAILURE
