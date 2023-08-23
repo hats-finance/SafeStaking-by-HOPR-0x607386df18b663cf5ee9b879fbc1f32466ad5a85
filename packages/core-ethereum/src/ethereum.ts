@@ -526,42 +526,14 @@ export async function createChainWrapper(
   const fundChannel = async (
     destination: Address,
     amount: Balance,
-    txHandlerApprove: (tx: string) => DeferType<string>,
     txHandlerFundChannel: (tx: string) => DeferType<string>
   ): Promise<[Receipt, Receipt]> => {
     let receipts: [Receipt, Receipt] = [undefined, undefined]
     // do approve, then fundChannel to easily interoperate with Safe
 
-    // first: approve
-    let approveError: unknown
-    let approveResult: SendTransactionReturn
+    // FIXME: Check for the current allowance and fail if its below the required
+    // amount
 
-    const approveTxPayload: TransactionPayload = {
-      data: u8aToHex(
-        chainCalls.get_approve_payload(
-          CoreEthereum_Balance.deserialize(amount.serialize_value(), CoreEthereum_BalanceType.HOPR)
-        )
-      ),
-      to: token.address,
-      value: BigNumber.from(0)
-    }
-    try {
-      approveResult = await sendTransaction(checkDuplicate, approveTxPayload, txHandlerApprove)
-    } catch (err) {
-      approveError = err
-    }
-
-    switch (approveResult.code) {
-      case SendTransactionStatus.SUCCESS:
-        receipts[0] = approveResult.tx.hash
-        break
-      case SendTransactionStatus.DUPLICATE:
-        throw new Error(`Failed in approving token transfer because transaction is a duplicate`)
-      default:
-        throw new Error(`Failed in approving token transfer due to ${approveError}`)
-    }
-
-    // second: fundChannel
     let fundChannelError: unknown
     let fundChannelResult: SendTransactionReturn
 
