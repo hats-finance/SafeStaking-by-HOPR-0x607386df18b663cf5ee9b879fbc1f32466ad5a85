@@ -145,9 +145,8 @@ where
         Ok(match HoprAnnouncementsEvents::decode_log(log)? {
             HoprAnnouncementsEvents::AddressAnnouncementFilter(address_announcement) => {
                 info!("received AddressAnnouncement event");
-                let maybe_account = db.get_account(&address_announcement.node.try_into()?).await?;
 
-                if let Some(mut account) = maybe_account {
+                if let Some(mut account) = db.get_account(&address_announcement.node.try_into()?).await? {
                     let new_entry_type = AccountType::Announced {
                         multiaddr: Multiaddr::from_str(&address_announcement.base_multiaddr)?,
                         updated_block: block_number,
@@ -155,6 +154,8 @@ where
 
                     account.update(new_entry_type);
                     db.update_account_and_snapshot(&account, snapshot).await?;
+
+                    debug!("account has been announced {account}");
 
                     self.cbs.new_announcement(&account);
 
@@ -190,16 +191,17 @@ where
 
                 db.update_account_and_snapshot(&updated_account, snapshot).await?;
 
+                debug!("key binding completed for account {updated_account}");
                 updated_account
             }
             HoprAnnouncementsEvents::RevokeAnnouncementFilter(revocation) => {
                 info!("received RevokeAnnouncement event");
-                let maybe_account = db.get_account(&revocation.node.try_into()?).await?;
 
-                if let Some(mut account) = maybe_account {
+                if let Some(mut account) = db.get_account(&revocation.node.try_into()?).await? {
                     account.update(AccountType::NotAnnounced);
                     db.update_account_and_snapshot(&account, snapshot).await?;
 
+                    debug!("announcement revoked for account {account}");
                     account
                 } else {
                     return Err(CoreEthereumIndexerError::RevocationBeforeKeyBinding);
@@ -215,15 +217,17 @@ where
         match HoprChannelsEvents::decode_log(log)? {
             HoprChannelsEvents::ChannelBalanceDecreasedFilter(balance_decreased) => {
                 info!("received ChannelBalanceDecreased event");
-                let maybe_channel = db.get_channel(&balance_decreased.channel_id.try_into()?).await?;
+                let channel_id: Hash = balance_decreased.channel_id.try_into()?;
 
-                if let Some(mut channel) = maybe_channel {
+                if let Some(mut channel) = db.get_channel(&channel_id).await? {
                     channel.balance = channel
                         .balance
                         .sub(&Balance::new(balance_decreased.new_balance.into(), BalanceType::HOPR));
 
-                    db.update_channel_and_snapshot(&balance_decreased.channel_id.try_into()?, &channel, snapshot)
+                    db.update_channel_and_snapshot(&channel_id, &channel, snapshot)
                         .await?;
+
+                    debug!("balance on channel {channel_id} has decreased to {0}", channel.balance);
 
                     if channel.source.eq(&self.chain_key) || channel.destination.eq(&self.chain_key) {
                         self.cbs.own_channel_updated(&channel);
@@ -234,15 +238,17 @@ where
             }
             HoprChannelsEvents::ChannelBalanceIncreasedFilter(balance_increased) => {
                 info!("received ChannelBalanceIncreased event");
-                let maybe_channel = db.get_channel(&balance_increased.channel_id.try_into()?).await?;
+                let channel_id: Hash = balance_increased.channel_id.try_into()?;
 
-                if let Some(mut channel) = maybe_channel {
+                if let Some(mut channel) = db.get_channel(&channel_id).await? {
                     channel.balance = channel
                         .balance
                         .add(&Balance::new(balance_increased.new_balance.into(), BalanceType::HOPR));
 
-                    db.update_channel_and_snapshot(&balance_increased.channel_id.try_into()?, &channel, snapshot)
+                    db.update_channel_and_snapshot(&channel_id, &channel, snapshot)
                         .await?;
+
+                    debug!("balance on channel {channel_id} has increased to {0}", channel.balance);
 
                     if channel.source.eq(&self.chain_key) || channel.destination.eq(&self.chain_key) {
                         self.cbs.own_channel_updated(&channel);
@@ -253,9 +259,9 @@ where
             }
             HoprChannelsEvents::ChannelClosedFilter(channel_closed) => {
                 info!("received ChannelClosed event");
-                let maybe_channel = db.get_channel(&channel_closed.channel_id.try_into()?).await?;
+                let channel_id: Hash = channel_closed.channel_id.try_into()?;
 
-                if let Some(mut channel) = maybe_channel {
+                if let Some(mut channel) = db.get_channel(&channel_id).await? {
                     channel.status = ChannelStatus::Closed;
 
                     // Incoming channel, so once closed. All unredeemed tickets just became invalid
@@ -263,8 +269,10 @@ where
                         db.delete_acknowledged_tickets_from(channel).await?;
                     }
 
-                    db.update_channel_and_snapshot(&channel_closed.channel_id.try_into()?, &channel, snapshot)
+                    db.update_channel_and_snapshot(&channel_id, &channel, snapshot)
                         .await?;
+
+                    debug!("channel {channel_id} has been closed");
 
                     if channel.source.eq(&self.chain_key) || channel.destination.eq(&self.chain_key) {
                         self.cbs.own_channel_updated(&channel);
@@ -277,12 +285,9 @@ where
                 info!("received ChannelOpened event");
                 let source: Address = channel_opened.source.0.try_into()?;
                 let destination: Address = channel_opened.destination.0.try_into()?;
-
                 let channel_id = generate_channel_id(&source, &destination);
 
-                let maybe_channel = db.get_channel(&channel_id).await?;
-
-                if let Some(mut channel) = maybe_channel {
+                if let Some(mut channel) = db.get_channel(&channel_id).await? {
                     channel.status = ChannelStatus::Open;
 
                     db.update_channel_and_snapshot(&channel_id, &channel, snapshot).await?;
@@ -304,6 +309,7 @@ where
 
                     db.update_channel_and_snapshot(&channel_id, &new_channel, snapshot)
                         .await?;
+
                     debug!("created new channel {channel_id} in Open state");
 
                     if source.eq(&self.chain_key) || destination.eq(&self.chain_key) {
@@ -313,13 +319,15 @@ where
             }
             HoprChannelsEvents::TicketRedeemedFilter(ticket_redeemed) => {
                 info!("received TicketRedeemed event");
-                let maybe_channel = db.get_channel(&ticket_redeemed.channel_id.try_into()?).await?;
+                let channel_id: Hash = ticket_redeemed.channel_id.try_into()?;
 
-                if let Some(mut channel) = maybe_channel {
+                if let Some(mut channel) = db.get_channel(&channel_id).await? {
                     channel.ticket_index = ticket_redeemed.new_ticket_index.into();
 
-                    db.update_channel_and_snapshot(&ticket_redeemed.channel_id.try_into()?, &channel, snapshot)
+                    db.update_channel_and_snapshot(&channel_id, &channel, snapshot)
                         .await?;
+
+                    debug!("ticket redeemed in channel {channel_id}");
 
                     if channel.source.eq(&self.chain_key) || channel.destination.eq(&self.chain_key) {
                         self.cbs.own_channel_updated(&channel);
@@ -329,15 +337,17 @@ where
                 }
             }
             HoprChannelsEvents::OutgoingChannelClosureInitiatedFilter(closure_initiated) => {
-                info!("received OutgoingChannelClosureIntiated event");
-                let maybe_channel = db.get_channel(&closure_initiated.channel_id.try_into()?).await?;
+                info!("received OutgoingChannelClosureInitiated event");
+                let channel_id: Hash = closure_initiated.channel_id.try_into()?;
 
-                if let Some(mut channel) = maybe_channel {
+                if let Some(mut channel) = db.get_channel(&channel_id).await? {
                     channel.status = ChannelStatus::PendingToClose;
                     channel.closure_time = closure_initiated.closure_time.into();
 
-                    db.update_channel_and_snapshot(&closure_initiated.channel_id.try_into()?, &channel, snapshot)
+                    db.update_channel_and_snapshot(&channel_id, &channel, snapshot)
                         .await?;
+
+                    debug!("closure initiated on channel {channel_id}");
 
                     if channel.source.eq(&self.chain_key) || channel.destination.eq(&self.chain_key) {
                         self.cbs.own_channel_updated(&channel);
@@ -379,9 +389,11 @@ where
             } else if to.eq(&self.address_to_monitor) {
                 db.add_hopr_balance(&Balance::new(value, BalanceType::HOPR), snapshot)
                     .await?;
+                debug!("node token balance has increased by {value}");
             } else if from.eq(&self.address_to_monitor) {
                 db.sub_hopr_balance(&Balance::new(value, BalanceType::HOPR), snapshot)
                     .await?;
+                debug!("node token balance has decreased by {value}");
             }
         } else {
             warn!("unhandled token event received");
@@ -530,7 +542,7 @@ where
         } else if address.eq(&self.addresses.node_management_module) {
             self.on_node_management_module_event(db, log, snapshot).await?
         } else {
-            error!("unknown event {address} address");
+            error!("unknown event at address {address}");
             return Err(CoreEthereumIndexerError::UnknownContract(*address));
         }
         Ok(())
