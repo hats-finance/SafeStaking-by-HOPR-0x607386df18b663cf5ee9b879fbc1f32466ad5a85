@@ -47,7 +47,7 @@
     "debug": "4.3.4",
     "heap-js": "2.2.0",
     "it-pushable": "3.0.0",
-    "libp2p": "0.37.3",
+    "libp2p": "0.46.7",
     "retimer": "3.0.0"
   },
   "devDependencies": {
