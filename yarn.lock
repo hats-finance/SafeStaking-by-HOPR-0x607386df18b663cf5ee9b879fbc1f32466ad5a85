@@ -631,7 +631,7 @@ __metadata:
     multiaddr: 10.0.1
     retimer: 3.0.0
     sinon: 12.0.1
-    typedoc: 0.24.8
+    typedoc: 0.25.0
     typedoc-plugin-markdown: 3.15.4
     typescript: 5.0.4
   languageName: unknown
@@ -665,7 +665,7 @@ __metadata:
     libp2p: 0.37.3
     mocha: 10.2.0
     retimer: 3.0.0
-    typedoc: 0.24.8
+    typedoc: 0.25.0
     typedoc-plugin-markdown: 3.15.4
     typescript: 5.0.4
   languageName: unknown
@@ -678,7 +678,7 @@ __metadata:
     "@types/mocha": 10.0.1
     mocha: 10.2.0
     semver: 7.5.4
-    typedoc: 0.24.8
+    typedoc: 0.25.0
     typedoc-plugin-markdown: 3.15.4
     typescript: 5.0.4
   languageName: unknown
@@ -725,7 +725,7 @@ __metadata:
     sinon: 12.0.1
     sqlite-level: 1.0.1
     timeout-abort-controller: 3.0.0
-    typedoc: 0.24.8
+    typedoc: 0.25.0
     typedoc-plugin-markdown: 3.15.4
     typescript: 5.0.4
   languageName: unknown
@@ -770,7 +770,7 @@ __metadata:
     swagger-ui-express: 4.6.3
     trace-unhandled: 2.0.1
     ts-node: ^10.9.1
-    typedoc: 0.24.8
+    typedoc: 0.25.0
     typedoc-plugin-markdown: 3.15.4
     typescript: 5.0.4
     uuid: ^9.0.0
@@ -6357,7 +6357,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"minimatch@npm:^9.0.0, minimatch@npm:^9.0.1":
+"minimatch@npm:^9.0.1, minimatch@npm:^9.0.3":
   version: 9.0.3
   resolution: "minimatch@npm:9.0.3"
   dependencies:
@@ -9198,19 +9198,19 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typedoc@npm:0.24.8":
-  version: 0.24.8
-  resolution: "typedoc@npm:0.24.8"
+"typedoc@npm:0.25.0":
+  version: 0.25.0
+  resolution: "typedoc@npm:0.25.0"
   dependencies:
     lunr: ^2.3.9
     marked: ^4.3.0
-    minimatch: ^9.0.0
+    minimatch: ^9.0.3
     shiki: ^0.14.1
   peerDependencies:
-    typescript: 4.6.x || 4.7.x || 4.8.x || 4.9.x || 5.0.x || 5.1.x
+    typescript: 4.6.x || 4.7.x || 4.8.x || 4.9.x || 5.0.x || 5.1.x || 5.2.x
   bin:
     typedoc: bin/typedoc
-  checksum: a46a14497f789fb3594e6c3af2e45276934ac46df40b7ed15a504ee51dc7a8013a2ffb3a54fd73abca6a2b71f97d3ec9ad356fa9aa81d29743e4645a965a2ae0
+  checksum: f0c5980017858969f037b136d9f305fa70162be891e7b169a92701cff67e1eed5c33895121265ec7da5b4a19d0042e649c103a6719c2b42736325b22fd85ff6a
   languageName: node
   linkType: hard
 
