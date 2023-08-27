@@ -60,7 +60,7 @@
     "@types/chai": "4.3.5",
     "@types/mocha": "10.0.1",
     "bl": "5.1.0",
-    "chai": "4.3.7",
+    "chai": "4.3.8",
     "libp2p": "0.37.3",
     "mocha": "10.2.0",
     "rewiremock": "3.14.5",
