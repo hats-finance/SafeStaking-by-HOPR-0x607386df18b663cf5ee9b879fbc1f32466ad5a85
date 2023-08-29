@@ -2,54 +2,37 @@ import { setImmediate as setImmediatePromise } from 'timers/promises'
 import BN from 'bn.js'
 import type { PeerId } from '@libp2p/interface-peer-id'
 import { peerIdFromString } from '@libp2p/peer-id'
-import chalk from 'chalk'
 import { EventEmitter } from 'events'
 import { Multiaddr } from '@multiformats/multiaddr'
 import {
   defer,
-  HoprDB,
-  stringToU8a,
   ChannelStatus,
+  Balance,
+  BalanceType,
   Address,
   ChannelEntry,
   AccountEntry,
-  PublicKey,
   Snapshot,
   debug,
   retryWithBackoffThenThrow,
-  Balance,
-  BalanceType,
   ordered,
-  u8aToHex,
   FIFO,
   type DeferType,
-  type Ticket,
-  create_counter,
   create_multi_counter,
   create_gauge,
-  create_multi_gauge,
-  U256,
+  Database,
+  Handlers,
   random_integer,
-  Hash,
-  number_to_channel_status
+  OffchainPublicKey,
+  CORE_ETHEREUM_CONSTANTS,
+  U256
 } from '@hoprnet/hopr-utils'
 
 import type { ChainWrapper } from '../ethereum.js'
-import {
-  type Event,
-  type EventNames,
-  type IndexerEvents,
-  type TokenEvent,
-  type TokenEventNames,
-  type RegistryEvent,
-  type RegistryEventNames,
-  type IndexerEventEmitter,
-  IndexerStatus
-} from './types.js'
+import { type IndexerEventEmitter, IndexerStatus, type IndexerEvents } from './types.js'
 import { isConfirmedBlock, snapshotComparator, type IndexerSnapshot } from './utils.js'
-import { BigNumber, type Contract, errors } from 'ethers'
-import { CORE_ETHEREUM_CONSTANTS } from '../../lib/core_ethereum_misc.js'
-import type { TypedEvent, TypedEventFilter } from '../utils/common.js'
+import { BigNumber, errors } from 'ethers'
+import { Filter, Log } from '@ethersproject/abstract-provider'
 
 // @ts-ignore untyped library
 import retimer from 'retimer'
@@ -58,6 +41,7 @@ import retimer from 'retimer'
 const constants = CORE_ETHEREUM_CONSTANTS()
 
 const log = debug('hopr-core-ethereum:indexer')
+const error = debug('hopr-core-ethereum:indexer:error')
 const verbose = debug('hopr-core-ethereum:verbose:indexer')
 
 const getSyncPercentage = (start: number, current: number, end: number) =>
@@ -70,24 +54,24 @@ const metric_indexerErrors = create_multi_counter(
   'Multicounter for provider errors in Indexer',
   ['type']
 )
-const metric_unconfirmedBlocks = create_counter(
-  'core_ethereum_counter_indexer_processed_unconfirmed_blocks',
-  'Number of processed unconfirmed blocks'
-)
-const metric_numAnnouncements = create_counter(
-  'core_ethereum_counter_indexer_announcements',
-  'Number of processed announcements'
-)
+// const metric_unconfirmedBlocks = create_counter(
+//   'core_ethereum_counter_indexer_processed_unconfirmed_blocks',
+//   'Number of processed unconfirmed blocks'
+// )
+// const metric_numAnnouncements = create_counter(
+//   'core_ethereum_counter_indexer_announcements',
+//   'Number of processed announcements'
+// )
 const metric_blockNumber = create_gauge('core_ethereum_gauge_indexer_block_number', 'Current block number')
-const metric_channelStatus = create_multi_gauge(
-  'core_ethereum_gauge_indexer_channel_status',
-  'Status of different channels',
-  ['channel']
-)
-const metric_ticketsRedeemed = create_counter(
-  'core_ethereum_counter_indexer_tickets_redeemed',
-  'Number of redeemed tickets'
-)
+// const metric_channelStatus = create_multi_gauge(
+//   'core_ethereum_gauge_indexer_channel_status',
+//   'Status of different channels',
+//   ['channel']
+// )
+// const metric_ticketsRedeemed = create_counter(
+//   'core_ethereum_counter_indexer_tickets_redeemed',
+//   'Number of redeemed tickets'
+// )
 
 /**
  * Indexes HoprChannels smart contract and stores to the DB,
@@ -100,43 +84,67 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
   public startupBlock: number = 0 // blocknumber at which the indexer starts
 
   // Use FIFO + sliding window for many events
-  private unconfirmedEvents: FIFO<TypedEvent<any, any>>
+  private unconfirmedEvents: FIFO<Log>
 
   private chain: ChainWrapper
   private genesisBlock: number
   private lastSnapshot: IndexerSnapshot | undefined
+  private safeAddress: Address
 
   private blockProcessingLock: DeferType<void> | undefined
 
   private unsubscribeErrors: () => void
   private unsubscribeBlock: () => void
 
+  private handlers: Handlers
+
   constructor(
     private address: Address,
-    private db: HoprDB,
+    private db: Database,
     private maxConfirmations: number,
     private blockRange: number
   ) {
     super()
 
-    this.unconfirmedEvents = FIFO<TypedEvent<any, any>>()
+    this.unconfirmedEvents = FIFO<Log>()
   }
 
   /**
    * Starts indexing.
    */
-  public async start(chain: ChainWrapper, genesisBlock: number): Promise<void> {
+  public async start(chain: ChainWrapper, genesisBlock: number, safeAddress: Address): Promise<void> {
     if (this.status === IndexerStatus.STARTED) {
       return
     }
     this.status = IndexerStatus.STARTING
+    const contractAddresses = chain.getInfo()
+    log(`[DEBUG]contractAddresses...${JSON.stringify(contractAddresses, null, 2)}`)
+
+    this.handlers = Handlers.init(
+      safeAddress.to_string(),
+      chain.getPublicKey().to_address().to_string(),
+      {
+        channels: contractAddresses.hoprChannelsAddress,
+        token: contractAddresses.hoprTokenAddress,
+        network_registry: contractAddresses.hoprNetworkRegistryAddress,
+        announcements: contractAddresses.hoprAnnouncementsAddress,
+        node_safe_registry: contractAddresses.hoprNodeSafeRegistryAddress,
+        node_management_module: contractAddresses.moduleAddress
+      },
+      {
+        newAnnouncement: this.onAnnouncementUpdate.bind(this),
+        ownChannelUpdated: this.onOwnChannelUpdated.bind(this),
+        notAllowedToAccessNetwork: this.onNotAllowedToAccessNetwork.bind(this)
+      }
+    )
 
     log(`Starting indexer...`)
     this.chain = chain
     this.genesisBlock = genesisBlock
+    this.safeAddress = safeAddress
 
     const [latestSavedBlock, latestOnChainBlock] = await Promise.all([
-      this.db.getLatestBlockNumber(),
+      new BN(await this.db.get_latest_block_number()).toNumber(),
       this.chain.getLatestBlockNumber()
     ])
 
@@ -145,6 +153,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
 
     log('Latest saved block %d', latestSavedBlock)
     log('Latest on-chain block %d', latestOnChainBlock)
+    log('Genesis block %d', genesisBlock)
 
     // go back 'MAX_CONFIRMATIONS' blocks in case of a re-org at time of stopping
     let fromBlock = latestSavedBlock
@@ -153,6 +162,24 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     }
     // no need to query before HoprChannels or HoprNetworkRegistry existed
     fromBlock = Math.max(fromBlock, this.genesisBlock)
+
+    // update the base valuse of balance and allowance of token for safe
+    if (!this.lastSnapshot) {
+      // update safe's HOPR token balance
+      log(`get safe ${this.safeAddress.to_string()} HOPR balance at block ${fromBlock}`)
+      const hoprBalance = await this.chain.getBalanceAtBlock(this.safeAddress, fromBlock)
+      await this.db.set_hopr_balance(Balance.deserialize(hoprBalance.serialize_value(), BalanceType.HOPR))
+      log(`set safe HOPR balance to ${hoprBalance.to_formatted_string()}`)
+
+      // update safe's HORP token allowance granted to Channels contract
+      log(`get safe ${this.safeAddress.to_string()} HOPR allowance at block ${fromBlock}`)
+      const safeAllowance = await this.chain.getTokenAllowanceGrantedToChannelsAt(this.safeAddress, fromBlock)
+      await this.db.set_staking_safe_allowance(
+        Balance.deserialize(safeAllowance.serialize_value(), BalanceType.HOPR),
+        new Snapshot(new U256('0'), new U256('0'), new U256('0')) // dummy snapshot
+      )
+      log(`set safe allowance to ${safeAllowance.to_formatted_string()}`)
+    }
 
     log('Starting to index from block %d, sync progress 0%%', fromBlock)
 
@@ -200,7 +227,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
 
     this.status = IndexerStatus.STARTED
     this.emit('status', IndexerStatus.STARTED)
-    log(chalk.green('Indexer started!'))
+    log('Indexer started!')
   }
 
   /**
@@ -220,7 +247,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
 
     this.status = IndexerStatus.STOPPED
     this.emit('status', IndexerStatus.STOPPED)
-    log(chalk.green('Indexer stopped!'))
+    log('Indexer stopped!')
   }
 
   /**
@@ -239,11 +266,11 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
       this.status = IndexerStatus.RESTARTING
 
       this.stop()
-      await this.start(this.chain, this.genesisBlock)
+      await this.start(this.chain, this.genesisBlock, this.safeAddress)
     } catch (err) {
       this.status = IndexerStatus.STOPPED
       this.emit('status', IndexerStatus.STOPPED)
-      log(chalk.red('Failed to restart: %s', err.message))
+      log('Failed to restart: %s', err.message)
       throw err
     }
   }
@@ -263,45 +290,47 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
   ): Promise<
     | {
         success: true
-        events: TypedEvent<any, any>[]
+        events: Log[]
       }
     | {
         success: false
       }
   > {
-    let rawEvents: TypedEvent<any, any>[] = []
+    let rawEvents: Log[] = []
 
-    const queries: { contract: Contract; filter: TypedEventFilter<any> }[] = [
-      // HoprChannels
+    const provider = this.chain.getProvider()
+    const contractAddresses = this.chain.getInfo()
+
+    let queries: Filter[] = [
       {
-        contract: this.chain.getChannels() as unknown as Contract,
-        filter: {
-          topics: [
-            [
-              // Relevant channel events
-              this.chain.getChannels().interface.getEventTopic('Announcement'),
-              this.chain.getChannels().interface.getEventTopic('ChannelUpdated'),
-              this.chain.getChannels().interface.getEventTopic('TicketRedeemed')
-            ]
-          ]
-        }
+        address: contractAddresses.hoprAnnouncementsAddress,
+        topics: [this.handlers.get_announcement_topics()],
+        fromBlock,
+        toBlock
       },
-      // HoprNetworkRegistry
       {
-        contract: this.chain.getNetworkRegistry() as unknown as Contract,
-        filter: {
-          topics: [
-            [
-              // Relevant HoprNetworkRegistry events
-              this.chain.getNetworkRegistry().interface.getEventTopic('Registered'),
-              this.chain.getNetworkRegistry().interface.getEventTopic('Deregistered'),
-              this.chain.getNetworkRegistry().interface.getEventTopic('RegisteredByOwner'),
-              this.chain.getNetworkRegistry().interface.getEventTopic('DeregisteredByOwner'),
-              this.chain.getNetworkRegistry().interface.getEventTopic('EligibilityUpdated'),
-              this.chain.getNetworkRegistry().interface.getEventTopic('EnabledNetworkRegistry')
-            ]
-          ]
-        }
+        address: contractAddresses.hoprChannelsAddress,
+        topics: [this.handlers.get_channel_topics()],
+        fromBlock,
+        toBlock
+      },
+      {
+        address: contractAddresses.hoprNodeSafeRegistryAddress,
+        topics: [this.handlers.get_node_safe_registry_topics()],
+        fromBlock,
+        toBlock
+      },
+      {
+        address: contractAddresses.hoprNetworkRegistryAddress,
+        topics: [this.handlers.get_network_registry_topics()],
+        fromBlock,
+        toBlock
+      },
+      {
+        address: contractAddresses.hoprTicketPriceOracleAddress,
+        topics: [this.handlers.get_ticket_price_oracle_topics()],
+        fromBlock,
+        toBlock
       }
     ]
 
@@ -311,45 +340,20 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     // handle errors produced by internal Ethers.js provider calls
     if (fetchTokenTransactions) {
       queries.push({
-        contract: this.chain.getToken() as unknown as Contract,
-        filter: {
-          topics: [
-            // Token transfer *from* us
-            [this.chain.getToken().interface.getEventTopic('Transfer')],
-            [u8aToHex(this.address.to_bytes32())]
-          ]
-        }
-      })
-      queries.push({
-        contract: this.chain.getToken() as unknown as Contract,
-        filter: {
-          topics: [
-            // Token transfer *towards* us
-            [this.chain.getToken().interface.getEventTopic('Transfer')],
-            null,
-            [u8aToHex(this.address.to_bytes32())]
-          ]
-        }
+        address: contractAddresses.hoprTokenAddress,
+        topics: [this.handlers.get_token_topics()],
+        fromBlock,
+        toBlock
       })
     }
 
     for (const query of queries) {
-      let tmpEvents: TypedEvent<any, any>[]
       try {
-        tmpEvents = (await query.contract.queryFilter(query.filter, fromBlock, toBlock)) as any
+        rawEvents.push(...(await provider.getLogs(query)))
       } catch {
         return {
           success: false
         }
-      }
-
-      for (const event of tmpEvents) {
-        Object.assign(event, query.contract.interface.parseLog(event))
-
-        if (event.event == undefined) {
-          Object.assign(event, { event: (event as any).name })
-        }
-        rawEvents.push(event)
       }
     }
 
@@ -387,11 +391,11 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
       //   toBlock - fromBlock
       // )
 
-      let res = await this.getEvents(fromBlock, toBlock)
+      let res = await this.getEvents(fromBlock, toBlock, true)
 
       if (res.success) {
         this.onNewEvents(res.events)
-        await this.onNewBlock(toBlock, false, false, true)
+        await this.onNewBlock(toBlock, false, false)
       } else {
         failedCount++
 
@@ -425,7 +429,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
       return
     }
 
-    log(chalk.red(`etherjs error: ${error}`))
+    log(`etherjs error: ${error}`)
 
     try {
       const errorType = [errors.SERVER_ERROR, errors.TIMEOUT, 'ECONNRESET', 'ECONNREFUSED'].filter((err) =>
@@ -436,7 +440,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
       if (errorType.length != 0) {
         metric_indexerErrors.increment([errorType[0]])
 
-        log(chalk.blue('code error falls here', this.chain.getAllQueuingTransactionRequests().length))
+        log('code error falls here', this.chain.getAllQueuingTransactionRequests().length)
         // allow the indexer to restart even there is no transaction in queue
         await retryWithBackoffThenThrow(
           () =>
@@ -471,12 +475,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
    * @param blockNumber latest on-chain block number
    * @param fetchEvents [optional] if true, query provider for events in block
    */
-  private async onNewBlock(
-    blockNumber: number,
-    fetchEvents = false,
-    fetchNativeTxs = false,
-    blocking = false
-  ): Promise<void> {
+  private async onNewBlock(blockNumber: number, fetchEvents = false, fetchNativeTxs = false): Promise<void> {
     // NOTE: This function is also used in event handlers
     // where it cannot be 'awaited', so all exceptions need to be caught.
 
@@ -504,7 +503,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     this.latestBlock = Math.max(this.latestBlock, blockNumber)
     metric_blockNumber.set(this.latestBlock)
 
-    let lastDatabaseSnapshot = await this.db.getLatestConfirmedSnapshotOrUndefined()
+    let lastDatabaseSnapshot = await this.db.get_latest_confirmed_snapshot()
 
     // settle transactions before processing events
     if (fetchNativeTxs) {
@@ -538,6 +537,10 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
               this.indexEvent(`announce-${txHash}`)
             } else if (this.listeners(`channel-updated-${txHash}`).length > 0) {
               this.indexEvent(`channel-updated-${txHash}`)
+            } else if (this.listeners(`node-safe-registered-${txHash}`).length > 0) {
+              this.indexEvent(`node-safe-registered-${txHash}`)
+            } else if (this.listeners(`token-approved-${txHash}`).length > 0) {
+              this.indexEvent(`token-approved-${txHash}`)
             }
 
             // update transaction manager
@@ -577,7 +580,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     }
 
     try {
-      await this.processUnconfirmedEvents(blockNumber, lastDatabaseSnapshot, blocking)
+      await this.processUnconfirmedEvents(blockNumber, lastDatabaseSnapshot)
     } catch (err) {
       log(`error while processing unconfirmed events`, err)
     }
@@ -599,7 +602,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
       if (
         // compare the current balance with the minimum balance required at the time of transaction being queued.
         // NB: Both gasLimit and maxFeePerGas requirement may be different due to "drastic" changes in contract state and network condition
-        new BN(currentBalance.to_string()).gte(minimumBalanceForQueuingTxs)
+        new BN(currentBalance.amount().to_string()).gte(minimumBalanceForQueuingTxs)
       ) {
         try {
           await Promise.all(
@@ -619,7 +622,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     }
 
     try {
-      await this.db.updateLatestBlockNumber(new BN(blockNumber))
+      await this.db.update_latest_block_number(blockNumber)
     } catch (err) {
       log(`error: failed to update database with latest block number ${blockNumber}`, err)
     }
@@ -634,7 +637,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
    * @dev ignores events that have been processed before.
    * @param events new unprocessed events
    */
-  private onNewEvents(events: Event<any>[] | TokenEvent<any>[] | RegistryEvent<any>[] | undefined): void {
+  private onNewEvents(events: Log[] | undefined): void {
     if (events == undefined || events.length == 0) {
       // Nothing to do
       return
@@ -691,7 +694,7 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
    * @param blockNumber latest on-chain block number
    * @param lastDatabaseSnapshot latest snapshot in database
    */
-  async processUnconfirmedEvents(blockNumber: number, lastDatabaseSnapshot: Snapshot | undefined, blocking: boolean) {
+  async processUnconfirmedEvents(blockNumber: number, lastDatabaseSnapshot: Snapshot | undefined) {
     log(
       'At the new block %d, there are %i unconfirmed events and ready to process %s, because the event was mined at %i (with finality %i)',
       blockNumber,
@@ -711,9 +714,8 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     ) {
       const event = this.unconfirmedEvents.shift()
       log(
-        'Processing event %s blockNumber=%s maxConfirmations=%s',
+        'Processing event at blockNumber=%s maxConfirmations=%s',
         // @TODO: fix type clash
-        event.event,
         blockNumber,
         this.maxConfirmations
       )
@@ -730,298 +732,125 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
         // ideally we would have detected if this snapshot was indeed processed,
         // at the moment we don't keep all events stored as we intend to keep
         // this indexer very simple
-        if (lastSnapshotComparison == 0 || lastSnapshotComparison < 0) {
+        if (lastSnapshotComparison <= 0) {
+          log(`Skipping event, lastSnapshotComparison=${lastSnapshotComparison}`)
           continue
         }
       }
 
       // @TODO: fix type clash
-      const eventName = event.event as EventNames | TokenEventNames | RegistryEventNames
-
       lastDatabaseSnapshot = new Snapshot(
         new U256(event.blockNumber.toString()),
         new U256(event.transactionIndex.toString()),
         new U256(event.logIndex.toString())
       )
 
-      log('Event name %s and hash %s', eventName, event.transactionHash)
+      log('indexer on_event callback for transaction hash: ', event.transactionHash)
 
-      switch (eventName) {
-        case 'Announcement':
-        case 'Announcement(address,bytes,bytes)':
-          await this.onAnnouncement(
-            event as Event<'Announcement'>,
-            new BN(blockNumber.toPrecision()),
-            lastDatabaseSnapshot
-          )
-          break
-        case 'ChannelUpdated':
-        case 'ChannelUpdated(address,address,tuple)':
-          await this.onChannelUpdated(event as Event<'ChannelUpdated'>, lastDatabaseSnapshot)
-          break
-        case 'Transfer':
-        case 'Transfer(address,address,uint256)':
-          // handle HOPR token transfer
-          await this.onTransfer(event as TokenEvent<'Transfer'>, lastDatabaseSnapshot)
-          break
-        case 'TicketRedeemed':
-        case 'TicketRedeemed(address,address,bytes32,uint256,uint256,bytes32,uint256,uint256,bytes)':
-          // if unlock `outstandingTicketBalance`, if applicable
-          await this.onTicketRedeemed(event as Event<'TicketRedeemed'>, lastDatabaseSnapshot)
-          break
-        case 'EligibilityUpdated':
-        case 'EligibilityUpdated(address,bool)':
-          await this.onEligibilityUpdated(event as RegistryEvent<'EligibilityUpdated'>, lastDatabaseSnapshot)
-          break
-        case 'Registered':
-        case 'Registered(address,string)':
-        case 'RegisteredByOwner':
-        case 'RegisteredByOwner(address,string)':
-          await this.onRegistered(
-            event as RegistryEvent<'Registered'> | RegistryEvent<'RegisteredByOwner'>,
-            lastDatabaseSnapshot
-          )
-          break
-        case 'Deregistered':
-        case 'Deregistered(address,string)':
-        case 'DeregisteredByOwner':
-        case 'DeregisteredByOwner(address,string)':
-          await this.onDeregistered(
-            event as RegistryEvent<'Deregistered'> | RegistryEvent<'DeregisteredByOwner'>,
-            lastDatabaseSnapshot
-          )
-          break
-        case 'EnabledNetworkRegistry':
-        case 'EnabledNetworkRegistry(bool)':
-          await this.onEnabledNetworkRegistry(event as RegistryEvent<'EnabledNetworkRegistry'>, lastDatabaseSnapshot)
-          break
-        default:
-          log(`ignoring event '${String(eventName)}'`)
-      }
-
-      metric_unconfirmedBlocks.increment()
-
-      if (
-        !blocking &&
-        this.unconfirmedEvents.size() > 0 &&
-        isConfirmedBlock(this.unconfirmedEvents.peek().blockNumber, blockNumber, this.maxConfirmations)
-      ) {
-        // Give other tasks CPU time to happen
-        // Wait until end of next event loop iteration before starting next db write-back
-        await setImmediatePromise()
+      try {
+        await this.handlers.on_event(
+          this.db,
+          event.address.replace('0x', ''),
+          event.topics.map((t) => t.replace('0x', '')),
+          event.data.replace('0x', ''),
+          blockNumber.toString(),
+          lastDatabaseSnapshot
+        )
+      } catch (err) {
+        error('Error during indexer on_event callback: ', err, event)
       }
     }
   }
 
-  private async onAnnouncement(event: Event<'Announcement'>, blockNumber: BN, lastSnapshot: Snapshot): Promise<void> {
-    // publicKey given by the SC is verified
-    const publicKey = PublicKey.deserialize(stringToU8a(event.args.publicKey))
-
-    let multiaddr: Multiaddr
-    try {
-      multiaddr = new Multiaddr(stringToU8a(event.args.multiaddr))
-        // remove "p2p" and corresponding peerID
-        .decapsulateCode(421)
-        // add new peerID
-        .encapsulate(`/p2p/${publicKey.to_peerid_str()}`)
-    } catch (error) {
-      log(`Invalid multiaddr '${event.args.multiaddr}' given in event 'onAnnouncement'`)
-      log(error)
-      return
-    }
-
-    const account = new AccountEntry(publicKey, multiaddr.toString(), blockNumber.toNumber())
-
-    log('New node announced', account.get_address().to_hex(), account.get_multiaddress_str())
-    metric_numAnnouncements.increment()
-
-    await this.db.updateAccountAndSnapshot(account, lastSnapshot)
-
+  onAnnouncementUpdate(account: AccountEntry) {
     this.emit('peer', {
-      id: peerIdFromString(account.get_peer_id_str()),
-      multiaddrs: [new Multiaddr(account.get_multiaddress_str())]
+      id: peerIdFromString(account.public_key.to_peerid_str()),
+      multiaddrs: [new Multiaddr(account.get_multiaddr_str())]
     })
   }
 
-  private async onChannelUpdated(event: Event<'ChannelUpdated'>, lastSnapshot: Snapshot): Promise<void> {
-    const { source, destination, newState } = event.args
-
-    log('channel-updated for hash %s', event.transactionHash)
-    let channel = new ChannelEntry(
-      Address.from_string(source),
-      Address.from_string(destination),
-      new Balance(newState.balance.toString(), BalanceType.HOPR),
-      new Hash(stringToU8a(newState.commitment)),
-      new U256(newState.ticketEpoch.toString()),
-      new U256(newState.ticketIndex.toString()),
-      number_to_channel_status(newState.status),
-      new U256(newState.channelEpoch.toString()),
-      new U256(newState.closureTime.toString())
-    )
-
-    let prevState: ChannelEntry
-    try {
-      prevState = await this.db.getChannel(channel.get_id())
-    } catch (e) {
-      // Channel is new
-    }
-
-    await this.db.updateChannelAndSnapshot(channel.get_id(), channel, lastSnapshot)
-
-    metric_channelStatus.set([channel.get_id().to_hex()], channel.status)
-
-    if (prevState && channel.status == ChannelStatus.Closed && prevState.status != ChannelStatus.Closed) {
-      log('channel was closed')
-      await this.onChannelClosed(channel)
-    }
-
-    this.emit('channel-update', channel)
-    verbose(`channel-update for channel ${channel.get_id().to_hex()}`)
-
-    if (channel.source.eq(this.address) || channel.destination.eq(this.address)) {
-      this.emit('own-channel-updated', channel)
-
-      if (channel.destination.eq(this.address)) {
-        // Channel _to_ us
-        if (channel.status === ChannelStatus.WaitingForCommitment) {
-          log('channel to us waiting for commitment')
-          log(channel.to_string())
-          this.emit('channel-waiting-for-commitment', channel)
-        }
-      }
-    }
+  onOwnChannelUpdated(channel: ChannelEntry) {
+    this.emit('own-channel-updated', channel)
   }
 
-  private async onTicketRedeemed(event: Event<'TicketRedeemed'>, lastSnapshot: Snapshot) {
-    if (Address.from_string(event.args.source).eq(this.address)) {
-      // the node used to lock outstandingTicketBalance
-      // rebuild part of the Ticket
-      const partialTicket: Partial<Ticket> = {
-        counterparty: Address.from_string(event.args.destination),
-        amount: new Balance(event.args.amount.toString(), BalanceType.HOPR)
-      }
-      const outstandingBalance = await this.db.getPendingBalanceTo(partialTicket.counterparty)
-
-      try {
-        if (!outstandingBalance.gte(Balance.zero(BalanceType.HOPR))) {
-          await this.db.resolvePending(partialTicket, lastSnapshot)
-        } else {
-          await this.db.resolvePending(
-            {
-              ...partialTicket,
-              amount: outstandingBalance
-            },
-            lastSnapshot
-          )
-          // It falls into this case when db of sender gets erased while having tickets pending.
-          // TODO: handle this may allow sender to send arbitrary amount of tickets through open
-          // channels with positive balance, before the counterparty initiates closure.
-        }
-        metric_ticketsRedeemed.increment()
-      } catch (error) {
-        log(`error in onTicketRedeemed ${error}`)
-        throw new Error(`error in onTicketRedeemed ${error}`)
-      }
-    }
+  onNotAllowedToAccessNetwork(address: Address) {
+    this.emit('network-registry-eligibility-changed', address, false)
   }
 
-  private async onChannelClosed(channel: ChannelEntry) {
-    await this.db.deleteAcknowledgedTicketsFromChannel(channel)
-    this.emit('channel-closed', channel)
-  }
+  /**
+   * TODO: event update
+   */
+  // private async onTicketRedeemed(event: Event<'TicketRedeemed'>, lastSnapshot: Snapshot) {
+  //   if (Address.from_string(event.args.source).eq(this.address)) {
+  //     // the node used to lock outstandingTicketBalance
+  //     // rebuild part of the Ticket
+  //     const partialTicket: Partial<Ticket> = {
+  //       counterparty: Address.from_string(event.args.destination),
+  //       amount: new Balance(event.args.amount.toString(), BalanceType.HOPR)
+  //     }
+  //     const outstandingBalance = Balance.deserialize(
+  //       (
+  //         await this.db.get_pending_balance_to(Address.deserialize(partialTicket.counterparty.serialize()))
+  //       ).serialize_value(),
+  //       BalanceType.HOPR
+  //     )
 
-  private async onEligibilityUpdated(
-    event: RegistryEvent<'EligibilityUpdated'>,
-    lastSnapshot: Snapshot
-  ): Promise<void> {
-    const account = Address.from_string(event.args.account)
-    await this.db.setEligible(account, event.args.eligibility, lastSnapshot)
-    verbose(
-      `network-registry: account ${account.to_string()} is ${event.args.eligibility ? 'eligible' : 'not eligible'}`
-    )
-    // emit event only when eligibility changes on accounts with a HoprNode associated
-    try {
-      const hoprNodes = await this.db.findHoprNodesUsingAccountInNetworkRegistry(account)
-      this.emit('network-registry-eligibility-changed', account, hoprNodes, event.args.eligibility)
-    } catch {}
-  }
-
-  private async onRegistered(
-    event: RegistryEvent<'Registered'> | RegistryEvent<'RegisteredByOwner'>,
-    lastSnapshot: Snapshot
-  ): Promise<void> {
-    let hoprNode: PeerId
-    try {
-      hoprNode = peerIdFromString(event.args.hoprPeerId)
-    } catch (error) {
-      log(`Invalid peer Id '${event.args.hoprPeerId}' given in event 'onRegistered'`)
-      log(error)
-      return
-    }
-    const account = Address.from_string(event.args.account)
-    await this.db.addToNetworkRegistry(PublicKey.from_peerid_str(hoprNode.toString()), account, lastSnapshot)
-    verbose(`network-registry: node ${event.args.hoprPeerId} is allowed to connect`)
-  }
-
-  private async onDeregistered(
-    event: RegistryEvent<'Deregistered'> | RegistryEvent<'DeregisteredByOwner'>,
-    lastSnapshot: Snapshot
-  ): Promise<void> {
-    let hoprNode: PeerId
-    try {
-      hoprNode = peerIdFromString(event.args.hoprPeerId)
-    } catch (error) {
-      log(`Invalid peer Id '${event.args.hoprPeerId}' given in event 'onDeregistered'`)
-      log(error)
-      return
-    }
-    await this.db.removeFromNetworkRegistry(
-      PublicKey.from_peerid_str(hoprNode.toString()),
-      Address.from_string(event.args.account),
-      lastSnapshot
-    )
-    verbose(`network-registry: node ${event.args.hoprPeerId} is not allowed to connect`)
-  }
-
-  private async onEnabledNetworkRegistry(
-    event: RegistryEvent<'EnabledNetworkRegistry'>,
-    lastSnapshot: Snapshot
-  ): Promise<void> {
-    this.emit('network-registry-status-changed', event.args.isEnabled)
-    await this.db.setNetworkRegistryEnabled(event.args.isEnabled, lastSnapshot)
-  }
-
-  private async onTransfer(event: TokenEvent<'Transfer'>, lastSnapshot: Snapshot) {
-    const isIncoming = Address.from_string(event.args.to).eq(this.address)
-    const amount = new Balance(event.args.value.toString(), BalanceType.HOPR)
-
-    if (isIncoming) {
-      await this.db.addHoprBalance(amount, lastSnapshot)
-    } else {
-      await this.db.subHoprBalance(amount, lastSnapshot)
-    }
-  }
+  //     assert(lastSnapshot !== undefined)
+  //     try {
+  //       // Negative case:
+  //       // It falls into this case when db of sender gets erased while having tickets pending.
+  //       // TODO: handle this may allow sender to send arbitrary amount of tickets through open
+  //       // channels with positive balance, before the counterparty initiates closure.
+  //       const balance = outstandingBalance.lte(Balance.zero(BalanceType.HOPR))
+  //         ? Balance.zero(BalanceType.HOPR)
+  //         : outstandingBalance
+  //       await this.db.resolve_pending(
+  //         Address.deserialize(partialTicket.counterparty.serialize()),
+  //         Balance.deserialize(balance.serialize_value(), BalanceType.HOPR),
+  //         Snapshot.deserialize(lastSnapshot.serialize())
+  //       )
+  //       metric_ticketsRedeemed.increment()
+  //     } catch (error) {
+  //       log(`error in onTicketRedeemed ${error}`)
+  //       throw new Error(`error in onTicketRedeemed ${error}`)
+  //     }
+  //   }
+  // }
 
   private indexEvent(indexerEvent: IndexerEvents) {
     log(`Indexer indexEvent ${indexerEvent}`)
     this.emit(indexerEvent)
   }
 
-  public async getAccount(address: Address) {
-    return this.db.getAccount(address)
+  public async getAccount(address: Address): Promise<AccountEntry | undefined> {
+    let account = await this.db.get_account(address)
+    if (account !== undefined) {
+      return AccountEntry.deserialize(account.serialize())
+    }
+
+    return account
   }
 
-  public async getPublicKeyOf(address: Address): Promise<PublicKey> {
-    const account = await this.db.getAccount(address)
-    if (account) {
-      return account.public_key
+  public async getChainKeyOf(address: Address): Promise<Address> {
+    const account = await this.getAccount(address)
+    if (account !== undefined) {
+      return account.chain_addr
     }
-    throw new Error('Could not find public key for address - have they announced? -' + address.to_hex())
+    throw new Error('Could not find chain key for address - have they announced? -' + address.to_hex())
+  }
+
+  public async getPacketKeyOf(address: Address): Promise<OffchainPublicKey> {
+    const pk = await this.db.get_packet_key(address)
+    if (pk !== undefined) {
+      return pk
+    }
+    throw new Error('Could not find packet key for address - have they announced? -' + address.to_hex())
   }
 
   public async *getAddressesAnnouncedOnChain() {
-    for await (const account of this.db.getAccountsIterable()) {
-      yield new Multiaddr(account.get_multiaddress_str())
+    let announced = await this.db.get_accounts()
+    while (announced.len() > 0) {
+      yield new Multiaddr(announced.next().get_multiaddr_str())
     }
   }
 
@@ -1029,14 +858,22 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
     const result: { id: PeerId; multiaddrs: Multiaddr[] }[] = []
     let out = `Known public nodes:\n`
 
-    for await (const account of this.db.getAccountsIterable((account: AccountEntry) =>
-      account.contains_routing_info()
-    )) {
-      out += `  - ${account.get_peer_id_str()} ${account.get_multiaddress_str()}\n`
-      result.push({
-        id: peerIdFromString(account.get_peer_id_str()),
-        multiaddrs: [new Multiaddr(account.get_multiaddress_str())]
-      })
+    let publicAccounts = await this.db.get_public_node_accounts()
+
+    while (publicAccounts.len() > 0) {
+      let account = publicAccounts.next()
+      if (account) {
+        let packetKey = await this.db.get_packet_key(account.chain_addr)
+        if (packetKey) {
+          out += `  - ${packetKey.to_peerid_str()} (on-chain ${account.chain_addr.to_string()}) ${account.get_multiaddr_str()}\n`
+          result.push({
+            id: peerIdFromString(packetKey.to_peerid_str()),
+            multiaddrs: [new Multiaddr(account.get_multiaddr_str())]
+          })
+        } else {
+          log(`could not retrieve packet key for address ${account.chain_addr.to_string()}`)
+        }
+      }
     }
 
     // Remove last `\n`
@@ -1050,15 +887,15 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
    * NOTE: channels with status 'PENDING_TO_CLOSE' are not included
    * @returns an open channel
    */
-  public async getRandomOpenChannel(): Promise<ChannelEntry> {
-    const channels = await this.db.getChannels((channel) => channel.status === ChannelStatus.Open)
+  public async getRandomOpenChannel(): Promise<ChannelEntry | undefined> {
+    const channels = await this.db.get_channels_open()
 
-    if (channels.length === 0) {
+    if (channels.len() == 0) {
       log('no open channels exist in indexer')
       return undefined
     }
 
-    return channels[random_integer(0, channels.length)]
+    return ChannelEntry.deserialize(channels.at(random_integer(0, channels.len())).serialize())
   }
 
   /**
@@ -1068,9 +905,12 @@ class Indexer extends (EventEmitter as new () => IndexerEventEmitter) {
    * @returns peer's open channels
    */
   public async getOpenChannelsFrom(source: Address): Promise<ChannelEntry[]> {
-    return await this.db
-      .getChannelsFrom(source)
-      .then((channels: ChannelEntry[]) => channels.filter((channel) => channel.status === ChannelStatus.Open))
+    let allChannels = await this.db.get_channels_from(source)
+    let channels: ChannelEntry[] = []
+    while (allChannels.len() > 0) {
+      channels.push(ChannelEntry.deserialize(allChannels.next().serialize()))
+    }
+    return channels.filter((channel) => channel.status === ChannelStatus.Open)
   }
 
   public resolvePendingTransaction(eventType: IndexerEvents, tx: string): DeferType<string> {

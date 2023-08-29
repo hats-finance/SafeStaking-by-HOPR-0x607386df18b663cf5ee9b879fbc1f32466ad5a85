@@ -2,6 +2,7 @@ import { setTimeout } from 'timers/promises'
 import sinon from 'sinon'
 import chai from 'chai'
 import chaiAsPromised from 'chai-as-promised'
+import { LevelDb, Database } from '@hoprnet/hopr-utils'
 
 import {
   authenticateToken,
@@ -11,9 +12,9 @@ import {
   deleteToken,
   validateTokenCapabilities
 } from './token.js'
-import { createMockDb } from './v2/fixtures.js'
+import { ALICE_ETHEREUM_ADDR } from './v3/fixtures.js'
 
-import type { default as Hopr } from '@hoprnet/hopr-core'
+import type { Hopr } from '@hoprnet/hopr-core'
 import type { Capability } from './token.js'
 
 chai.should()
@@ -22,9 +23,11 @@ chai.use(chaiAsPromised)
 describe('authentication token', function () {
   let node: Hopr
 
-  before(async function () {
+  beforeEach(async function () {
     node = sinon.fake() as any
-    node.db = createMockDb()
+    let db = new LevelDb()
+    await db.backend.open()
+    node.db = new Database(db, ALICE_ETHEREUM_ADDR.clone())
   })
 
   it('should be created if parameters are valid', async function () {
@@ -217,7 +220,9 @@ describe('authentication token authorization', function () {
 
   before(async function () {
     node = sinon.fake() as any
-    node.db = createMockDb()
+    let db = new LevelDb()
+    await db.backend.open()
+    node.db = new Database(db, ALICE_ETHEREUM_ADDR.clone())
   })
 
   it('should succeed if lifetime is unset', async function () {

@@ -1,7 +1,10 @@
 use crate::utils::HelperErrors;
 use hoprd_keypair::key_pair::HoprKeys;
 use log::warn;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 /// Decrypt identity files and returns an vec of PeerIds and Ethereum Addresses
 ///
@@ -10,22 +13,21 @@ use std::{fs, path::PathBuf};
 /// * `identity_directory` - Directory to all the identity files
 /// * `password` - Password to unlock all the identity files
 /// * `identity_prefix` - Prefix of identity files. Only identity files with the provided are decrypted with the password
-pub fn read_identities(files: Vec<PathBuf>, password: &String) -> Result<Vec<HoprKeys>, HelperErrors> {
-    let mut results: Vec<HoprKeys> = Vec::with_capacity(files.len());
+pub fn read_identities(files: Vec<PathBuf>, password: &String) -> Result<HashMap<String, HoprKeys>, HelperErrors> {
+    let mut results = HashMap::with_capacity(files.len());
 
     for file in files.iter() {
         let file_str = file
             .to_str()
             .ok_or(HelperErrors::IncorrectFilename(file.to_string_lossy().to_string()))?;
 
-        println!("{}", file_str);
-
         match HoprKeys::read_eth_keystore(file_str, password) {
             Ok((keys, needs_migration)) => {
                 if needs_migration {
                     keys.write_eth_keystore(file_str, password, false)?
                 }
-                results.push(keys)
+                let file_key = file.file_name().unwrap();
+                results.insert(String::from(file_key.to_str().unwrap()), keys);
             }
             Err(e) => {
                 warn!("Could not decrypt keystore file at {}. {}", file_str, e.to_string())
@@ -43,11 +45,15 @@ pub fn read_identities(files: Vec<PathBuf>, password: &String) -> Result<Vec<Hop
 /// * `dir_name` - Directory to the storage of an identity file
 /// * `password` - Password to encrypt the identity file
 /// * `name` - Prefix of identity files.
-pub fn create_identity(dir_name: &str, password: &str, maybe_name: &Option<String>) -> Result<HoprKeys, HelperErrors> {
+pub fn create_identity(
+    dir_name: &str,
+    password: &str,
+    maybe_name: &Option<String>,
+) -> Result<(String, HoprKeys), HelperErrors> {
     // create dir if not exist
     fs::create_dir_all(dir_name)?;
 
-    let keys = HoprKeys::new();
+    let keys = HoprKeys::random();
 
     // check if `name` is end with `.id`, if not, append it
     let file_path = match maybe_name {
@@ -59,19 +65,27 @@ pub fn create_identity(dir_name: &str, password: &str, maybe_name: &Option<Strin
                 format!("{dir_name}/{name}.id")
             }
         }
-        None => format!("{dir_name}/{}.id", { keys.id.to_string() }),
+        None => format!("{dir_name}/{}.id", { keys.id().to_string() }),
     };
 
-    keys.write_eth_keystore(&file_path, password, false)?;
+    let path = Path::new(&file_path);
+    if path.exists() {
+        return Err(HelperErrors::IdentityFileExists(file_path));
+    } else {
+        keys.write_eth_keystore(&file_path, password, false)?;
+    }
 
-    Ok(keys)
+    path.file_name()
+        .and_then(|p| p.to_str())
+        .map(|s| (String::from(s), keys))
+        .ok_or(HelperErrors::UnableToCreateIdentity)
 }
 
 #[cfg(test)]
 mod tests {
+    use core_crypto::keypairs::Keypair;
     use std::path::Path;
     use tempfile::tempdir;
-    use utils_types::traits::PeerIdLike;
 
     use super::*;
 
@@ -94,18 +108,20 @@ mod tests {
 
         let path = tmp.path().to_str().unwrap();
         let pwd = "password";
-        let created_id = create_identity(path, pwd, &None).unwrap();
+        let (_, created_id) = create_identity(path, pwd, &None).unwrap();
 
         // created and the read id is identical
         let files = get_files(path, &None);
         let read_id = read_identities(files, &pwd.to_string()).unwrap();
         assert_eq!(read_id.len(), 1);
-        assert_eq!(read_id[0].chain_key.1.to_address(), created_id.chain_key.1.to_address());
-        assert_eq!(read_id[0].chain_key.1.to_peerid(), created_id.chain_key.1.to_peerid());
+        assert_eq!(
+            read_id.values().nth(0).unwrap().chain_key.public().0.to_address(),
+            created_id.chain_key.public().0.to_address()
+        );
 
         // print the read id
         println!("Debug {:#?}", read_id);
-        println!("Display {}", read_id[0]);
+        println!("Display {}", read_id.values().nth(0).unwrap());
 
         remove_json_keystore(path).map_err(|err| println!("{:?}", err)).ok();
     }
@@ -208,7 +224,7 @@ mod tests {
         let pwd = "e2e-test";
 
         let weak_crypto_alice_keystore = r#"{"crypto":{"cipher":"aes-128-ctr","cipherparams":{"iv":"6084fab56497402930d0833fbc17e7ea"},"ciphertext":"50c0cf2537d7bc0ab6dbb7909d21d3da6445e5bd2cb1236de7efbab33302ddf1dd6a0393c986f8c111fe73a22f36af88858d79d23882a5f991713cb798172069d060f28c680afc28743e8842e8e849ebc21209825e23465afcee52a49f9c4f6734061f91a45b4cc8fbd6b4c95cc4c1b487f0007ed88a1b46b5ebdda616013b3f7ba465f97352b9412e69e6690cee0330c0b25bcf5fc3cdf12e4167336997920df9d6b7d816943ab3817481b9","kdf":"scrypt","kdfparams":{"dklen":32,"n":2,"p":1,"r":8,"salt":"46e30c2d74ba04b881e99fb276ae6a970974499f6abe286a00a69ba774ace095"},"mac":"70dccb366e8ddde13ebeef9a6f35bbc1333176cff3d33a72c925ce23753b34f4"},"id":"b5babdf4-da20-4cc1-9484-58ea24f1b3ae","version":3}"#;
-        let alice_peer_id = "16Uiu2HAmUYnGY3USo8iy13SBFW7m5BMQvC4NETu1fGTdoB86piw7";
+        //let alice_peer_id = "16Uiu2HAmUYnGY3USo8iy13SBFW7m5BMQvC4NETu1fGTdoB86piw7";
         let alice_address = "0x838d3c1d2ff5c576d7b270aaaaaa67e619217aac";
 
         // create dir if not exist.
@@ -219,8 +235,17 @@ mod tests {
         let files = get_files(path, &None);
         let val = read_identities(files, &pwd.to_string()).unwrap();
         assert_eq!(val.len(), 1);
-        assert_eq!(val[0].chain_key.1.to_peerid_str(), alice_peer_id);
-        assert_eq!(val[0].chain_key.1.to_address().to_string(), alice_address);
+        assert_eq!(
+            val.values()
+                .nth(0)
+                .unwrap()
+                .chain_key
+                .public()
+                .0
+                .to_address()
+                .to_string(),
+            alice_address
+        );
 
         remove_json_keystore(path).map_err(|err| println!("{:?}", err)).ok();
     }

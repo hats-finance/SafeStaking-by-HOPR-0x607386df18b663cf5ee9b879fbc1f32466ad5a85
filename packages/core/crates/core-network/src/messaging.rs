@@ -1,8 +1,6 @@
 use crate::errors::NetworkingError::MessagingError;
 use core_crypto::derivation::derive_ping_pong;
 use serde::{Deserialize, Serialize};
-use utils_types::errors::GeneralError::ParseError;
-use utils_types::traits::BinarySerializable;
 
 use crate::errors::Result;
 
@@ -21,6 +19,7 @@ impl ControlMessage {
     pub fn generate_ping_request() -> Self {
         let mut ping = PingMessage::default();
         ping.nonce.copy_from_slice(&derive_ping_pong(None));
+
         Self::Ping(ping)
     }
 
@@ -74,10 +73,10 @@ impl PingMessage {
 }
 
 #[cfg(not(feature = "compat-ping"))]
-impl utils_types::traits::AutoBinarySerializable<'_> for PingMessage {}
+impl utils_types::traits::AutoBinarySerializable for PingMessage {}
 
 #[cfg(feature = "compat-ping")]
-impl BinarySerializable<'_> for PingMessage {
+impl utils_types::traits::BinarySerializable for PingMessage {
     const SIZE: usize = core_crypto::parameters::PING_PONG_NONCE_SIZE;
 
     // This implementation is backwards compatible with older HOPR versions
@@ -89,7 +88,7 @@ impl BinarySerializable<'_> for PingMessage {
             ret.nonce.copy_from_slice(buf.drain(0..Self::SIZE).as_ref());
             Ok(ret)
         } else {
-            Err(ParseError)
+            Err(utils_types::errors::GeneralError::ParseError)
         }
     }
 

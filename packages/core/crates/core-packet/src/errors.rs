@@ -1,4 +1,6 @@
 use core_crypto::errors::CryptoError;
+use core_path::errors::PathError;
+use core_types::errors::CoreTypesError;
 use thiserror::Error;
 use utils_db::errors::DbError;
 use utils_types::errors::GeneralError;
@@ -20,13 +22,10 @@ pub enum PacketError {
     #[error("could not find channel to {0}")]
     ChannelNotFound(String),
 
-    #[error("path for the packet is not valid")]
-    PathNotValid,
-
     #[error("ticket validation failed, packet dropped: {0}")]
     TicketValidation(String),
 
-    #[error("invalid received acknowledgement: {0}")]
+    #[error("received invalid acknowledgement: {0}")]
     AcknowledgementValidation(String),
 
     #[error("Proof of Relay challenge could not be verified")]
@@ -35,17 +34,32 @@ pub enum PacketError {
     #[error("channel {0} is out of funds")]
     OutOfFunds(String),
 
+    #[error("logic error during packet processing: {0}")]
+    LogicError(String),
+
     #[error("tx queue is full, retry later")]
     Retry,
 
     #[error("underlying transport error while sending packet: {0}")]
     TransportError(String),
 
+    #[error("path position from the packet header mismatched with the path position in ticket")]
+    PathPositionMismatch,
+
+    #[error("no channel domain_separator tag found")]
+    MissingDomainSeparator,
+
     #[error(transparent)]
     CryptographicError(#[from] CryptoError),
 
     #[error(transparent)]
     PacketDbError(#[from] DbError),
+
+    #[error(transparent)]
+    PathError(#[from] PathError),
+
+    #[error(transparent)]
+    CoreTypesError(#[from] CoreTypesError),
 
     #[error(transparent)]
     Other(#[from] GeneralError),

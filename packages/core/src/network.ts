@@ -1,20 +1,14 @@
 import {
   resolve_network,
-  core_misc_initialize_crate,
   supported_networks,
   type ChainOptions,
   type ResolvedNetwork,
   type Network
-} from '../lib/core_misc.js'
-import { DeploymentExtract } from '@hoprnet/hopr-core-ethereum/src/utils/utils.js'
-core_misc_initialize_crate()
-export {
-  resolve_network,
-  supported_networks,
-  type ChainOptions,
-  type ResolvedNetwork,
-  type Network
-} from '../lib/core_misc.js'
+} from '../../hoprd/lib/hoprd_hoprd.js'
+
+import type { DeploymentExtract } from '@hoprnet/hopr-core-ethereum'
+
+export { resolve_network, supported_networks, type ChainOptions, type ResolvedNetwork, type Network }
 
 export type EnvironmentType = 'production' | 'staging' | 'development' | 'local'
 
@@ -46,12 +40,16 @@ export function resolveNetwork(id: string, customProvider?: string): ResolvedNet
   return resolve_network(MONO_REPO_PATH, id, customProvider)
 }
 
-export const getContractData = (id: string): DeploymentExtract => {
+export function getContractData(id: string): DeploymentExtract {
   const resolvedNetwork = resolveNetwork(id)
+
   return {
-    hoprTokenAddress: resolvedNetwork.token_contract_address,
-    hoprChannelsAddress: resolvedNetwork.channels_contract_address,
-    hoprNetworkRegistryAddress: resolvedNetwork.network_registry_contract_address,
+    hoprAnnouncementsAddress: resolvedNetwork.announcements,
+    hoprTokenAddress: resolvedNetwork.token,
+    hoprChannelsAddress: resolvedNetwork.channels,
+    hoprNetworkRegistryAddress: resolvedNetwork.network_registry,
+    hoprNodeSafeRegistryAddress: resolvedNetwork.node_safe_registry,
+    hoprTicketPriceOracleAddress: resolvedNetwork.ticket_price_oracle,
     indexerStartBlockNumber: resolvedNetwork.channel_contract_deploy_block
   }
 }

@@ -16,6 +16,8 @@ source "${mydir}/testnet.sh"
 # shellcheck disable=SC1090
 source "${mydir}/utils.sh"
 
+PATH="${mydir}/../.foundry/bin:${mydir}/../.cargo/bin:${PATH}"
+
 usage() {
   msg
   msg "Usage: $0 [-h|--help] [-s|--skip-cleanup] [-c|--just-cleanup]"
@@ -63,17 +65,17 @@ if [ "${CI:-}" = "true" ] && [ -z "${ACT:-}" ]; then
 fi
 
 # find usable tmp dir
-declare tmp="$(find_tmp_dir)"
+declare tmp_dir="$(find_tmp_dir)"
 
 declare node_prefix="hopr-smoke-test-node"
 
-declare node1_dir="${tmp}/${node_prefix}-1"
-declare node2_dir="${tmp}/${node_prefix}-2"
-declare node3_dir="${tmp}/${node_prefix}-3"
-declare node4_dir="${tmp}/${node_prefix}-4"
-declare node5_dir="${tmp}/${node_prefix}-5"
-declare node6_dir="${tmp}/${node_prefix}-6"
-declare node7_dir="${tmp}/${node_prefix}-7"
+declare node1_dir="${tmp_dir}/${node_prefix}_0"
+declare node2_dir="${tmp_dir}/${node_prefix}_1"
+declare node3_dir="${tmp_dir}/${node_prefix}_2"
+declare node4_dir="${tmp_dir}/${node_prefix}_3"
+declare node5_dir="${tmp_dir}/${node_prefix}_4"
+declare node6_dir="${tmp_dir}/${node_prefix}_5"
+declare node7_dir="${tmp_dir}/${node_prefix}_6"
 
 declare node1_log="${node1_dir}.log"
 declare node2_log="${node2_dir}.log"
@@ -91,17 +93,13 @@ declare node5_id="${node5_dir}.id"
 declare node6_id="${node6_dir}.id"
 declare node7_id="${node7_dir}.id"
 
-declare node1_privkey="0xf1d438861b30707b2d918ece60b837536521d31b142a5f8f88039261fa37fbd1e1a81bb95e6ae0ad124a187f3f5f908d88c30c7dd2880b441f07deeada71944d"
-declare node2_privkey="0x7f68149557e9114d72aa8925988246d7d5b77e3e756673b97b1f00fe59341a25db2ce95e8ef2624398f68c107328672ef1f3a66c5c1a04faabd8055425352669"
-declare node3_privkey="0xa0d51a3401c8d89e07b43e1f9ee7ebb53269bb90510b79c0129cf62f506e1d9383dacd73a65f00c18e5982c956e1b3a9ddfe90bd14a6481375ec972442927a59"
-declare node4_privkey="0xee240f3583c059c4deee617cf0e1eca1e9cca53e9d749ee199d776bb7900233c2da432bc3c111e628ed1ff86ba40386105e1a2c48215e7b6087a4698914a1b65"
-declare node5_privkey="0x7092f55182bd2d7cda73ad8f491b7f3e180105e281b4fc18620fa6e818cbde4d746cb426ab8013579b198ab344cdf2d637037782eafb9c64157c6e6a495d50b3"
-declare node6_privkey="0x667b54fbe53f237327be22bf8ba5eaae95a91c1feeb01ba91bbf1c261d4b6ca287ec2ea308f9d1f2f06c62f3db0975a61a4e7c3ca4872bcb65abab2f78452f58"
-declare node7_privkey="0xa0170c8441d30e15937c1f8cf54657acbd30b9331a0ba146d8d8e579d078210383a7d0eec06153e2a7848a6761d17126c4e7bf6faa08addba7d156b36cdef4cf"
 declare password="e2e-test"
 
-declare anvil_rpc_log="${tmp}/hopr-smoke-test-anvil-rpc.log"
-declare anvil_cfg_file="${tmp}/hopr-smoke-test-anvil.cfg"
+declare anvil_rpc_log="${tmp_dir}/hopr-smoke-test-anvil-rpc.log"
+declare anvil_cfg_file="${tmp_dir}/hopr-smoke-test-anvil.cfg"
+
+declare cluster_size
+cluster_size=7
 
 # anvil port
 declare -a all_ports=( 8545 )
@@ -119,7 +117,7 @@ function cleanup {
 
   # Cleaning up everything
   log "Cleaning up processes"
-  for port in ${all_ports[@]}; do
+  for port in "${all_ports[@]}"; do
     lsof -i ":${port}" -s TCP:LISTEN -t | xargs -I {} -n 1 kill {}
   done
 
@@ -129,16 +127,16 @@ function cleanup {
       continue
     fi
 
-    log=$(grep -E "Process exiting with signal [0-9]" ${node_log} || echo "")
+    log=$(grep -E "Process exiting with signal [0-9]" "${node_log}" || echo "")
 
     if [ -z "${log}" ]; then
       log "${node_log}: Process did not exit properly"
       exit_code=1
     else
-      exit_code=$(echo ${log} | sed -E "s/.*signal[ ]([0-9]+).*/\1/")
+      exit_code=$(echo "${log}" | sed -E "s/.*signal[ ]([0-9]+).*/\1/")
     fi
 
-    if [ ${exit_code} != "0" ]; then
+    if [ "${exit_code}" != "0" ]; then
       non_zero=true
       log "${node_log}: terminated with non-zero exit code ${exit_code}"
     fi
@@ -163,14 +161,86 @@ if [ "${skip_cleanup}" != "1" ] && [ "${skip_cleanup}" != "true" ]; then
   trap cleanup SIGINT SIGTERM ERR EXIT
 fi
 
+function reuse_pregenerated_identities() {
+  log "Reuse pre-generated identities"
+
+  # remove existing identity files in tmp folder, .safe.args
+  find -L "${tmp_dir}" -type f -name "${node_prefix}_*.safe.args" -delete
+  find -L "${tmp_dir}" -type f -name "${node_prefix}_*.id" -delete
+
+  local ready_id_files
+  mapfile -t ready_id_files <<< "$(find -L "${mydir}/../tests/identities" -type f -name "*.id" | sort)"
+
+  # we copy and rename the files according to the expected file name format and
+  # destination folder
+
+  local ids_info
+  ids_info="$(ETHERSCAN_API_KEY="" IDENTITY_PASSWORD="${password}" hopli identity -a read -d tests/identities)"
+
+  log "ADDRESSES INFORMATION"
+  for i in ${!ready_id_files[@]}; do
+    cp "${ready_id_files[$i]}" "${tmp_dir}/${node_prefix}_${i}.id"
+
+    local peer_id native_address id_file
+    id_file="$(basename ${ready_id_files[$i]})"
+    peer_id="$(echo "${ids_info}" | jq -r "to_entries[] | select(.key==\"${id_file}\").value.peer_id")"
+    native_address="$(echo "${ids_info}" | jq -r "to_entries[] | select(.key==\"${id_file}\").value.native_address")"
+
+    log "\tnode ${i}"
+    log "\t\tpeer id: ${peer_id}"
+    log "\t\tnative address: ${native_address}"
+  done
+}
+
+function generate_local_identities() {
+  log "Generate local identities"
+
+  # remove existing identity files, .safe.args
+  find -L "${tmp_dir}" -type f -name "${node_prefix}_*.safe.args" -delete
+  find -L "${tmp_dir}" -type f -name "${node_prefix}_*.id" -delete
+
+  env ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-}" IDENTITY_PASSWORD="${password}" \
+    hopli identity \
+    --action create \
+    --identity-directory "${tmp_dir}" \
+    --identity-prefix "${node_prefix}_" \
+    --number "${cluster_size}"
+}
+
+# read the identity file is located at $id_path
+# create safe and module for each identity
+function create_local_safes() {
+  log "Create safe"
+
+  mapfile -t id_files <<< "$(find -L "${tmp_dir}" -type f -name "${node_prefix}_*.id" | sort)"
+
+  # create a loop so safes are created for all the nodes TODO:
+  for id_file in ${id_files[@]}; do
+    # store the returned `--safeAddress <safe_address> --moduleAddress <module_address>` to `safe_i.log` for each id
+    # `hopli create-safe-module` will also add nodes to network registry and approve token transfers for safe
+    env \
+      ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-}" \
+      IDENTITY_PASSWORD="${password}" \
+      DEPLOYER_PRIVATE_KEY="${PRIVATE_KEY}" \
+      hopli create-safe-module \
+        --network anvil-localhost \
+        --identity-from-path "${id_file}" \
+        --contracts-root "./packages/ethereum/contracts" > "${id_file%.id}.safe.log"
+
+    # store safe arguments in separate file for later use
+    grep -oE "\--safeAddress.*--moduleAddress.*" "${id_file%.id}.safe.log" > "${id_file%.id}.safe.args"
+    rm "${id_file%.id}.safe.log"
+  done
+}
+
+
 # $1 = api port
 # $2 = api token
 # $3 = node port
 # $4 = node data directory
 # $5 = node log file
 # $6 = node id file
-# $7 = private key to use
-# $8 = OPTIONAL: additional args to hoprd
+# $7 = OPTIONAL: additional args to hoprd
 function setup_node() {
   local api_port=${1}
   local api_token=${2}
@@ -178,8 +248,10 @@ function setup_node() {
   local dir=${4}
   local log=${5}
   local id=${6}
-  local private_key=${7}
-  local additional_args=${8:-""}
+  local additional_args=${7:-""}
+
+  local safe_args
+  safe_args="$(<${dir}.safe.args)"
 
   log "Run node ${id} on API port ${api_port} -> ${log}"
 
@@ -195,6 +267,10 @@ function setup_node() {
 
   # Remove previous logs to make sure the regex does not match
   rm -f "${log}"
+
+  log "safe args ${safe_args}"
+  # read safe args and append to additional_args TODO:
+  additional_args="${additional_args} ${safe_args}"
 
   log "Additional args: \"${additional_args}\""
 
@@ -215,7 +291,6 @@ function setup_node() {
       --identity="${id}" \
       --init \
       --password="${password}" \
-      --privateKey="${private_key}" \
       --api \
       --apiPort "${api_port}" \
       --testAnnounceLocalAddresses \
@@ -272,7 +347,7 @@ declare protocol_config="${mydir}/../packages/core/protocol-config.json"
 declare deployments_summary="${mydir}/../packages/ethereum/contracts/contracts-addresses.json"
 
 # --- Running Mock Blockchain --- {{{
-${mydir}/run-local-anvil.sh -l "${anvil_rpc_log}" -c "${anvil_cfg_file}"
+"${mydir}"/run-local-anvil.sh -l "${anvil_rpc_log}" -c "${anvil_cfg_file}"
 if [ ! -f "${anvil_cfg_file}" ]; then
   log "Could not find anvil cfg file ${anvil_cfg_file}"
   exit 1
@@ -293,52 +368,69 @@ update_protocol_config_addresses "${protocol_config}" "${deployments_summary}" "
 update_protocol_config_addresses "${protocol_config}" "${deployments_summary}" "anvil-localhost" "anvil-localhost2"
 # }}}
 
+# create identity files to node1_id, .... node7_id
+# generate_local_identities
+reuse_pregenerated_identities
+
+# create safe and modules for all the ids, store them in args files
+create_local_safes
+
 #  --- Run nodes --- {{{
-setup_node 13301 ${default_api_token} 19091 "${node1_dir}" "${node1_log}" "${node1_id}" "${node1_privkey}" "--announce"
+setup_node 13301 ${default_api_token} 19091 "${node1_dir}" "${node1_log}" "${node1_id}" "--announce"
 # use empty auth token to be able to test this in the security tests
-setup_node 13302 ""                   19092 "${node2_dir}" "${node2_log}" "${node2_id}" "${node2_privkey}" "--announce"
-setup_node 13303 ${default_api_token} 19093 "${node3_dir}" "${node3_log}" "${node3_id}" "${node3_privkey}" "--announce"
-setup_node 13304 ${default_api_token} 19094 "${node4_dir}" "${node4_log}" "${node4_id}" "${node4_privkey}" "--testNoDirectConnections"
-setup_node 13305 ${default_api_token} 19095 "${node5_dir}" "${node5_log}" "${node5_id}" "${node5_privkey}" "--testNoDirectConnections"
+setup_node 13302 ""                   19092 "${node2_dir}" "${node2_log}" "${node2_id}" "--announce"
+setup_node 13303 ${default_api_token} 19093 "${node3_dir}" "${node3_log}" "${node3_id}" "--announce"
+setup_node 13304 ${default_api_token} 19094 "${node4_dir}" "${node4_log}" "${node4_id}" "--testNoDirectConnections --announce"
+setup_node 13305 ${default_api_token} 19095 "${node5_dir}" "${node5_log}" "${node5_id}" "--testNoDirectConnections --announce"
 # should not be able to talk to the rest
-setup_node 13306 ${default_api_token} 19096 "${node6_dir}" "${node6_log}" "${node6_id}" "${node6_privkey}" "--announce --network anvil-localhost2"
-# node n8 will be the only one NOT registered
-setup_node 13307 ${default_api_token} 19097 "${node7_dir}" "${node7_log}" "${node7_id}" "${node7_privkey}" "--announce"
+setup_node 13306 ${default_api_token} 19096 "${node6_dir}" "${node6_log}" "${node6_id}" "--announce --network anvil-localhost2"
+# node n7 will be the only one NOT registered
+setup_node 13307 ${default_api_token} 19097 "${node7_dir}" "${node7_log}" "${node7_id}" "--announce"
 # }}}
 
 # DO NOT MOVE THIS STEP
 #  --- Wait until private key has been created or recovered --- {{{
-wait_for_regex ${node1_log} "please fund this node"
-wait_for_regex ${node2_log} "please fund this node"
-wait_for_regex ${node3_log} "please fund this node"
-wait_for_regex ${node4_log} "please fund this node"
-wait_for_regex ${node5_log} "please fund this node"
-wait_for_regex ${node6_log} "please fund this node"
-wait_for_regex ${node7_log} "please fund this node"
+wait_for_regex "${node1_log}" "please fund this node"
+wait_for_regex "${node2_log}" "please fund this node"
+wait_for_regex "${node3_log}" "please fund this node"
+wait_for_regex "${node4_log}" "please fund this node"
+wait_for_regex "${node5_log}" "please fund this node"
+wait_for_regex "${node6_log}" "please fund this node"
+wait_for_regex "${node7_log}" "please fund this node"
 # }}}
 
 log "Funding nodes"
 #  --- Fund nodes --- {{{
 make -C "${mydir}/../" fund-local-all \
-  id_password="${password}" id_prefix="${node_prefix}" id_dir="${tmp}"
+  id_password="${password}" id_prefix="${node_prefix}" id_dir="${tmp_dir}"
 # }}}
 
 log "Waiting for port binding"
 
 #  --- Wait for ports to be bound --- {{{
-wait_for_regex ${node1_log} "STARTED NODE"
-wait_for_regex ${node2_log} "STARTED NODE"
-wait_for_regex ${node3_log} "STARTED NODE"
-wait_for_regex ${node4_log} "STARTED NODE"
-wait_for_regex ${node5_log} "STARTED NODE"
-wait_for_regex ${node6_log} "STARTED NODE"
+wait_for_regex "${node1_log}" "STARTED NODE"
+wait_for_regex "${node2_log}" "STARTED NODE"
+wait_for_regex "${node3_log}" "STARTED NODE"
+wait_for_regex "${node4_log}" "STARTED NODE"
+wait_for_regex "${node5_log}" "STARTED NODE"
+wait_for_regex "${node6_log}" "STARTED NODE"
 wait_for_port 19096 "127.0.0.1" "${node6_log}"
-wait_for_regex ${node7_log} "STARTED NODE"
+wait_for_regex "${node7_log}" "STARTED NODE"
+# }}}
+
+log "Sleep for 30 seconds to ensure announcements are confirmed on-chain"
+sleep 30
+
+log "Restarting node 1 to ensure restart works as expected"
+#  --- Restart check --- {{{
+lsof -i ":13301" -s TCP:LISTEN -t | xargs -I {} -n 1 kill {}
+setup_node 13301 ${default_api_token} 19091 "${node1_dir}" "${node1_log}" "${node1_id}" "--announce"
+wait_for_regex "${node1_log}" "STARTED NODE"
 # }}}
 
 #  --- Ensure data directories are used --- {{{
 for node_dir in ${node1_dir} ${node2_dir} ${node3_dir} ${node4_dir} ${node5_dir} ${node6_dir} ${node7_dir}; do
-  declare node_dir_db="${node_dir}/db/LOG"
+  declare node_dir_db="${node_dir}/db/db.sqlite"
   declare node_dir_peerstore="${node_dir}/peerstore/LOG"
   [ -f "${node_dir_db}" ] || { echo "Data file ${node_dir_db} missing"; exit 1; }
   [ -f "${node_dir_peerstore}" ] || { echo "Data file ${node_dir_peerstore} missing"; exit 1; }

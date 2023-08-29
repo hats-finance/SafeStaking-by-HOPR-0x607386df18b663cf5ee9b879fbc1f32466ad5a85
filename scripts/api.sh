@@ -45,7 +45,7 @@ api_call(){
     response_type="-d"
   fi
 
-  local cmd="curl -X ${rest_method} -m ${step_time} --connect-timeout ${step_time} -s -H X-Auth-Token:${api_token} -H Content-Type:application/json --url ${source_api}/api/v2${api_endpoint} ${response_type}"
+  local cmd="curl -X ${rest_method} -m ${step_time} --connect-timeout ${step_time} -s -H X-Auth-Token:${api_token} -H Content-Type:application/json --url ${source_api}/api/v3${api_endpoint} ${response_type}"
   # if no end time was given we need to calculate it once
 
   local now=$(node -e "console.log(process.hrtime.bigint().toString());")
@@ -72,7 +72,7 @@ api_call(){
         log "${YELLOW}attempt: ${attempt} - api_call (${cmd} \"${request_body}\") FAILED, received: ${result} but expected ${assertion}, retrying in ${step_time} seconds${NOFORMAT}"
       fi
 
-      sleep ${step_time}
+      sleep "${step_time}"
 
       now=$(node -e "console.log(process.hrtime.bigint().toString());")
       (( ++attempt ))
@@ -90,16 +90,16 @@ api_withdraw() {
   local node_api="${1}"
   local currency="${2}"
   local amount="${3}"
-  local recipient="${4}"
+  local ethereum_address="${4}"
 
-  api_call ${node_api} "/account/withdraw" "POST" "{\"currency\": \"${currency}\", \"amount\": \"${amount}\", \"recipient\": \"${recipient}\"}" "receipt" 600
+  api_call "${node_api}" "/account/withdraw" "POST" "{\"currency\": \"${currency}\", \"amount\": \"${amount}\", \"ethereumAddress\": \"${ethereum_address}\"}" "receipt" 600
 }
 
 # $1 = node api endpoint
 api_get_balances() {
   local origin=${1}
 
-  api_call ${origin} "/account/balances" "GET" "" "native" 600
+  api_call "${origin}" "/account/balances" "GET" "" "native" 600
 }
 
 # get addresses is in the utils file
@@ -112,7 +112,7 @@ api_set_alias() {
   local peer_id="${2}"
   local alias="${3}"
 
-  api_call ${node_api} "/aliases" "POST" "{\"peerId\": \"${peer_id}\", \"alias\": \"${alias}\"}" "" 600
+  api_call "${node_api}" "/aliases" "POST" "{\"peerId\": \"${peer_id}\", \"alias\": \"${alias}\"}" "" 600
 }
 
 # $1 = node api endpoint
@@ -121,7 +121,7 @@ api_get_aliases() {
   local node_api="${1}"
   local assertion="${2}"
 
-  api_call ${node_api} "/aliases" "GET" "" "${assertion}" 600
+  api_call "${node_api}" "/aliases" "GET" "" "${assertion}" 600
 }
 
 # $1 = node api endpoint
@@ -131,7 +131,7 @@ api_get_alias() {
   local alias="${2}"
   local assertion="${3}"
 
-  api_call ${node_api} "/aliases/${alias}" "GET" "" "${assertion}" 600
+  api_call "${node_api}" "/aliases/${alias}" "GET" "" "${assertion}" 600
 }
 
 # $1 = node api endpoint
@@ -140,7 +140,7 @@ api_remove_alias() {
   local node_api="${1}"
   local alias="${2}"
 
-  api_call ${node_api} "/aliases/${alias}" "DELETE" "" "" 600
+  api_call "${node_api}" "/aliases/${alias}" "DELETE" "" "" 600
 }
 
 # $1 = node api endpoint
@@ -149,14 +149,14 @@ api_get_all_channels() {
   local node_api="${1}"
   local including_closed=${2}
 
-  api_call ${node_api} "/channels?includingClosed=${including_closed}" "GET" "" "incoming" 600
+  api_call "${node_api}" "/channels?includingClosed=${including_closed}" "GET" "" "incoming" 600
 }
 
 # $1 = node api endpoint
 api_get_settings() {
   local node_api="${1}"
 
-  api_call ${node_api} "/settings" "GET" "" "includeRecipient" 600
+  api_call "${node_api}" "/settings" "GET" "" "includeRecipient" 600
 }
 
 # $1 = node api endpoint
@@ -167,19 +167,19 @@ api_set_setting() {
   local key="${2}"
   local value="${3}"
 
-  api_call ${node_api} "/settings/${key}" "PUT" "{\"settingValue\": \"${value}\"}" "" 600
+  api_call "${node_api}" "/settings/${key}" "PUT" "{\"settingValue\": \"${value}\"}" "" 600
 }
 
 # $1 = node api endpoint
-# $2 = counterparty peer id
+# $2 = channel id
 # $3 = OPTIONAL: call timeout
 api_redeem_tickets_in_channel() {
   local node_api="${1}"
-  local peer_id="${2}"
+  local channel_id="${2}"
   local timeout="${3:-600}"
 
   log "redeeming tickets in specific channel, this can take up to 5 minutes depending on the amount of unredeemed tickets in that channel"
-  api_call ${node_api} "/channels/${peer_id}/tickets/redeem" "POST" "" "" ${timeout} ${timeout}
+  api_call "${node_api}" "/channels/${channel_id}/tickets/redeem" "POST" "" "" "${timeout}" "${timeout}"
 }
 
 # $1 = node api endpoint
@@ -189,18 +189,18 @@ api_redeem_tickets() {
   local timeout="${2:-600}"
 
   log "redeeming all tickets, this can take up to 5 minutes depending on the amount of unredeemed tickets"
-  api_call ${node_api} "/tickets/redeem" "POST" "" "" ${timeout} ${timeout}
+  api_call "${node_api}" "/tickets/redeem" "POST" "" "" "${timeout}" "${timeout}"
 }
 
 # $1 = node api endpoint
-# $2 = counterparty peer id
+# $2 = channel id
 # $3 = assertion
 api_get_tickets_in_channel() {
   local node_api="${1}"
-  local peer_id="${2}"
+  local channel id="${2}"
   local assertion="${3:-"counterparty"}"
 
-  api_call ${node_api} "/channels/${peer_id}/tickets" "GET" "" "${assertion}" 600
+  api_call "${node_api}" "/channels/${channel_id}/tickets" "GET" "" "${assertion}" 600
 }
 
 # $1 = node api endpoint
@@ -211,14 +211,14 @@ api_ping() {
   local peer_id="${2}"
   local assertion="${3}"
 
-  api_call ${origin} "/node/ping" "POST" "{\"peerId\": \"${peer_id}\"}" "${assertion}" 600
+  api_call "${origin}" "/peers/${peer_id}/ping" "POST" "{}" "${assertion}" 600
 }
 
 # $1 = node api endpoint
 api_peers() {
   local origin=${1:-localhost:3001}
 
-  api_call ${origin} "/node/peers" "GET" "" "" 600
+  api_call "${origin}" "/node/peers" "GET" "" "" 600
 }
 
 # $1 = node api endpoint
@@ -227,70 +227,83 @@ api_get_ticket_statistics() {
   local origin=${1:-localhost:3001}
   local assertion="${2}"
 
-  api_call ${origin} "/tickets/statistics" "GET" "" "${assertion}" 600
+  api_call "${origin}" "/tickets/statistics" "GET" "" "${assertion}" 600
 }
 
+# $1 = node api endpoint
+# $2 = assertion
+api_get_node_info() {
+  local origin=${1:-localhost:3001}
+
+  api_call "${origin}" "/node/info" "GET" "" "" 600
+}
+
+
 # $1 = source api url
-# $2 = recipient peer id
-# $3 = message
-# $4 = OPTIONAL: peers in the message path
+# $2 = message app tag
+# $3 = peer_address peer id
+# $4 = message
+# $5 = OPTIONAL: peers in the message path
 api_send_message(){
   local source_api="${1}"
-  local recipient="${2}"
-  local msg="${3}"
-  local peers="${4}"
+  local tag="${2}"
+  local peer_address="${3}"
+  local msg="${4}"
+  local peers="${5}"
 
-  local path=$(echo ${peers} | tr -d '\n' | jq -R -s 'split(" ")')
-  local payload='{"body":"'${msg}'","path":'${path}',"recipient":"'${recipient}'"}'
+  local path=$(echo "${peers}" | tr -d '\n' | jq -R -s 'split(" ")')
+  local payload='{"body":"'${msg}'","path":'${path}',"peerId":"'${peer_address}'","tag":'${tag}'}'
   # Node might need some time once commitment is set on-chain
-  api_call ${source_api} "/messages" "POST" "${payload}" "202" 90 15 "" true
+  api_call "${source_api}" "/messages" "POST" "${payload}" "202" 90 15 "" true
 }
 
 # $1 = source node id
 # $2 = destination node id
 # $3 = channel source api endpoint
-# $4 = channel destination peer id
-# $5 = channel direction, either incoming or outgoing
+# $4 = destination address
+# $5 = direction
 # $6 = OPTIONAL: verify closure strictly
 api_close_channel() {
   local source_id="${1}"
   local destination_id="${2}"
   local source_api="${3}"
-  local destination_peer_id="${4}"
-  local channel_direction="${5}"
+  local destination_address="${4}"
+  local direction="${5}"
   local close_check="${6:-false}"
-  local result
+  local result channel_id channels_info source_addr
 
-  log "Node ${source_id} close channel to Node ${destination_id}"
+  # fetch channel id from API
+  channels_info="$(api_get_all_channels "${source_api}" false)"
+  channel_id="$(echo "${channel_info}" | jq  -r ".${direction}| map(select(.peerAddress | contains("${destination_address}")))[0].id")"
+
+  log "Node ${source_id} close channel ${channel_id} to Node ${destination_id}"
 
   if [ "${close_check}" = "true" ]; then
-    result="$(api_call ${source_api} "/channels/${destination_peer_id}/${channel_direction}" "DELETE" "" 'Closed|Channel is already closed' 600)"
+    result="$(api_call "${source_api}" "/channels/${channel_id}" "DELETE" "" 'Closed|Channel is already closed' 600)"
   else
-    result="$(api_call ${source_api} "/channels/${destination_peer_id}/${channel_direction}" "DELETE" "" 'PendingToClose|Closed' 60 20)"
+    result="$(api_call "${source_api}" "/channels/${channel_id}" "DELETE" "" 'PendingToClose|Closed' 60 20)"
   fi
 
-  log "Node ${source_id} close channel to Node ${destination_id} result -- ${result}"
+  log "Node ${source_id} close channel ${channel_id} to Node ${destination_id} result -- ${result}"
 }
 
 # $1 = source node id
 # $2 = destination node id
 # $3 = channel source api endpoint
-# $4 = channel destination peer id
+# $4 = channel destination native address
 # $5 = OPTIONAL: amount of tokens to stake (full denomination), default is 100
 api_open_channel() {
   local source_id="${1}"
   local destination_id="${2}"
   local source_api="${3}"
-  local destination_peer_id="${4}"
+  local destination_address="${4}"
   local amount="${5:-100000000000000000000}"
   local result
 
   log "Node ${source_id} open channel to Node ${destination_id}"
-  result=$(api_call ${source_api} "/channels" "POST" "{ \"peerId\": \"${destination_peer_id}\", \"amount\": \"${amount}\" }" 'channelId|CHANNEL_ALREADY_OPEN' 600 30)
+  result=$(api_call "${source_api}" "/channels" "POST" "{ \"peerAddress\": \"${destination_address}\", \"amount\": \"${amount}\" }" 'channelId|CHANNEL_ALREADY_OPEN' 600 30)
   log "Node ${source_id} open channel to Node ${destination_id} result -- ${result}"
 }
-
-
 
 # $1 = node api address (origin)
 # validate that node is funded
@@ -298,9 +311,9 @@ api_validate_node_balance_gt0() {
   local balance eth_balance hopr_balance
   local endpoint=${1:-localhost:3001}
 
-  balance=$(api_get_balances ${endpoint})
-  eth_balance=$(echo ${balance} | jq -r ".native")
-  hopr_balance=$(echo ${balance} | jq -r ".hopr")
+  balance=$(api_get_balances "${endpoint}")
+  eth_balance=$(echo "${balance}" | jq -r ".native")
+  hopr_balance=$(echo "${balance}" | jq -r ".hopr")
 
   if [[ "$eth_balance" != "0" && "$hopr_balance" != "0" ]]; then
     log "$1 is funded"

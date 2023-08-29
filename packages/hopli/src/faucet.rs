@@ -6,6 +6,7 @@ use crate::{
     utils::{Cmd, HelperErrors},
 };
 use clap::Parser;
+use core_crypto::keypairs::Keypair;
 use core_crypto::types::ToChecksum;
 use ethers::{
     types::U256,
@@ -110,7 +111,11 @@ impl FaucetArgs {
 
             match read_identities(local_files, &pwd) {
                 Ok(node_identities) => {
-                    addresses_all.extend(node_identities.iter().map(|ni| ni.chain_key.1.to_address().to_string()));
+                    addresses_all.extend(
+                        node_identities
+                            .values()
+                            .map(|ni| ni.chain_key.public().0.to_address().to_string()),
+                    );
                 }
                 Err(e) => return Err(e),
             }

@@ -8,6 +8,7 @@ let
   );
   macosPkgs = with pkgs; lib.optional stdenv.isDarwin (
     with darwin.apple_sdk.frameworks; [
+      SystemConfiguration
       # macOS file watcher support
       CoreFoundation
       CoreServices
@@ -46,6 +47,9 @@ let
 
     # test Github automation
     act # 0.2.42
+
+    # test coverage generation
+    lcov
 
     # custom pkg groups
     macosPkgs

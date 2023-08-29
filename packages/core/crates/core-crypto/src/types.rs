@@ -1,32 +1,51 @@
-use curve25519_dalek::edwards::CompressedEdwardsY;
-use curve25519_dalek::traits::IsIdentity;
-use curve25519_dalek::EdwardsPoint;
-use elliptic_curve::{NonZeroScalar, ProjectivePoint};
-use k256::ecdsa::signature::hazmat::PrehashVerifier;
-use k256::ecdsa::signature::Verifier;
-use k256::ecdsa::{RecoveryId, Signature as ECDSASignature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::generic_array::GenericArray;
-use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
-use k256::elliptic_curve::CurveArithmetic;
-use k256::{ecdsa, elliptic_curve, AffinePoint, Secp256k1};
-use libp2p_identity::{secp256k1::PublicKey as lp2p_k256_PublicKey, PeerId, PublicKey as lp2p_PublicKey};
-use rand::rngs::OsRng;
+use crate::shared_keys::Scalar as _;
+use curve25519_dalek::{
+    edwards::{CompressedEdwardsY, EdwardsPoint},
+    montgomery::MontgomeryPoint,
+};
+use elliptic_curve::{
+    hash2curve::{ExpandMsgXmd, GroupDigest},
+    sec1::EncodedPoint,
+    NonZeroScalar, ProjectivePoint,
+};
+use k256::{
+    ecdsa::{
+        self,
+        signature::{hazmat::PrehashVerifier, Verifier},
+        RecoveryId, Signature as ECDSASignature, SigningKey, VerifyingKey,
+    },
+    elliptic_curve::{
+        self,
+        generic_array::GenericArray,
+        sec1::{FromEncodedPoint, ToEncodedPoint},
+        CurveArithmetic,
+    },
+    AffinePoint, Scalar, Secp256k1,
+};
+
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
-use std::ops::Add;
-use std::str::FromStr;
+use std::{
+    fmt::{Display, Formatter},
+    ops::Add,
+    str::FromStr,
+};
 
+use crate::{
+    errors::{
+        CryptoError::{self, CalculationError, InvalidInputValue},
+        Result,
+    },
+    keypairs::{ChainKeypair, Keypair, OffchainKeypair},
+    primitives::{DigestLike, EthDigest},
+    random::random_group_element,
+};
 use utils_log::warn;
-use utils_types::errors::GeneralError;
-use utils_types::errors::GeneralError::ParseError;
-
-use utils_types::primitives::{Address, EthereumChallenge};
-use utils_types::traits::{BinarySerializable, PeerIdLike, ToHex};
-
-use crate::errors::CryptoError::{InvalidInputValue, InvalidSecretScalar};
-use crate::errors::{CryptoError, CryptoError::CalculationError, Result};
-use crate::primitives::{DigestLike, EthDigest};
-use crate::random::random_group_element;
+use utils_types::{
+    errors::GeneralError::{self, ParseError},
+    primitives::{Address, EthereumChallenge, U256},
+    traits::{BinarySerializable, PeerIdLike, ToHex},
+};
 
 /// Extend support for arbitrary array sizes in serde
 ///
@@ -89,7 +108,7 @@ mod arrays {
 }
 
 /// Represent an uncompressed elliptic curve point on the secp256k1 curve
-#[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct CurvePoint {
     affine: AffinePoint,
@@ -105,15 +124,21 @@ impl CurvePoint {
     }
 }
 
+impl Default for CurvePoint {
+    fn default() -> Self {
+        CurvePoint::from_exponent(&U256::one().to_bytes()).unwrap()
+    }
+}
+
 impl From<PublicKey> for CurvePoint {
     fn from(pubkey: PublicKey) -> Self {
-        CurvePoint::from_affine(*pubkey.key.as_affine())
+        (*pubkey.key.as_affine()).into()
     }
 }
 
 impl From<&PublicKey> for CurvePoint {
     fn from(pubkey: &PublicKey) -> Self {
-        CurvePoint::from_affine(*pubkey.key.as_affine())
+        (*pubkey.key.as_affine()).into()
     }
 }
 
@@ -137,17 +162,13 @@ impl FromStr for CurvePoint {
     }
 }
 
-impl PeerIdLike for CurvePoint {
-    fn from_peerid(peer_id: &PeerId) -> utils_types::errors::Result<Self> {
-        CurvePoint::from_bytes(&PublicKey::from_peerid(peer_id)?.to_bytes(false))
-    }
-
-    fn to_peerid(&self) -> PeerId {
-        PublicKey::from_bytes(&self.to_bytes()).unwrap().to_peerid()
+impl From<CurvePoint> for AffinePoint {
+    fn from(value: CurvePoint) -> Self {
+        value.affine
     }
 }
 
-impl BinarySerializable<'_> for CurvePoint {
+impl BinarySerializable for CurvePoint {
     const SIZE: usize = 65; // Stores uncompressed data
 
     fn from_bytes(bytes: &[u8]) -> utils_types::errors::Result<Self> {
@@ -174,14 +195,9 @@ impl CurvePoint {
         PublicKey::from_privkey(exponent).map(CurvePoint::from)
     }
 
-    /// Creates a curve point from the affine point representation.
-    pub fn from_affine(affine: AffinePoint) -> Self {
-        Self { affine }
-    }
-
     /// Converts the curve point to a representation suitable for calculations.
     pub fn to_projective_point(&self) -> ProjectivePoint<Secp256k1> {
-        ProjectivePoint::<Secp256k1>::from(&self.affine)
+        self.affine.into()
     }
 
     /// Serializes the curve point into a compressed form. This is a cheap operation.
@@ -195,7 +211,7 @@ impl CurvePoint {
         // more efficient for doing the additions. Then finally make in an affine point
         let affine: AffinePoint = summands
             .iter()
-            .map(|p| p.to_projective_point())
+            .map(|p| ProjectivePoint::<Secp256k1>::from(p.affine))
             .fold(<Secp256k1 as CurveArithmetic>::ProjectivePoint::IDENTITY, |acc, x| {
                 acc.add(x)
             })
@@ -259,7 +275,7 @@ impl From<Response> for Challenge {
     }
 }
 
-impl BinarySerializable<'_> for Challenge {
+impl BinarySerializable for Challenge {
     const SIZE: usize = PublicKey::SIZE_COMPRESSED;
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
@@ -316,7 +332,7 @@ impl HalfKey {
     }
 }
 
-impl BinarySerializable<'_> for HalfKey {
+impl BinarySerializable for HalfKey {
     const SIZE: usize = 32;
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
@@ -342,6 +358,12 @@ impl BinarySerializable<'_> for HalfKey {
 pub struct HalfKeyChallenge {
     #[serde(with = "arrays")]
     hkc: [u8; Self::SIZE],
+}
+
+impl Display for HalfKeyChallenge {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.hkc))
+    }
 }
 
 impl Default for HalfKeyChallenge {
@@ -371,7 +393,7 @@ impl HalfKeyChallenge {
     }
 }
 
-impl BinarySerializable<'_> for HalfKeyChallenge {
+impl BinarySerializable for HalfKeyChallenge {
     const SIZE: usize = PublicKey::SIZE_COMPRESSED; // Size of the compressed secp256k1 point.
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
@@ -386,16 +408,6 @@ impl BinarySerializable<'_> for HalfKeyChallenge {
 
     fn to_bytes(&self) -> Box<[u8]> {
         self.hkc.into()
-    }
-}
-
-impl PeerIdLike for HalfKeyChallenge {
-    fn from_peerid(peer_id: &PeerId) -> utils_types::errors::Result<Self> {
-        HalfKeyChallenge::from_bytes(&PublicKey::from_peerid(peer_id)?.to_bytes(true))
-    }
-
-    fn to_peerid(&self) -> PeerId {
-        PublicKey::from_bytes(&self.hkc).expect("invalid half-key").to_peerid()
     }
 }
 
@@ -429,6 +441,12 @@ impl Default for Hash {
     }
 }
 
+impl std::fmt::Display for Hash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.to_hex().as_str())
+    }
+}
+
 #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
 impl Hash {
     #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen(constructor))]
@@ -445,7 +463,7 @@ impl Hash {
     }
 }
 
-impl BinarySerializable<'_> for Hash {
+impl BinarySerializable for Hash {
     const SIZE: usize = 32; // Defined by Keccak256.
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
@@ -465,12 +483,6 @@ impl BinarySerializable<'_> for Hash {
     }
 }
 
-impl Display for Hash {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_hex())
-    }
-}
-
 impl Hash {
     /// Takes all the byte slices and computes hash of their concatenated value.
     /// Uses the Keccak256 digest.
@@ -485,32 +497,34 @@ impl Hash {
     }
 }
 
-/// Represents an Ed25519 public key.
-/// This public key is always internally in a compressed form, and therefore unsuitable for calculations.
-/// Because of this fact, the OffchainPublicKey is BinarySerializable as opposed to PublicKey
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
-pub struct OffchainPublicKey {
-    key: CompressedEdwardsY,
-}
+impl TryFrom<[u8; 32]> for Hash {
+    type Error = GeneralError;
 
-#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
-impl OffchainPublicKey {
-    /// Generates a new random public key.
-    /// Because the corresponding private key is discarded, this might be useful only for testing purposes.
-    pub fn random() -> Self {
-        let (_, pk) = Self::random_keypair();
-        pk
+    fn try_from(value: [u8; 32]) -> std::result::Result<Self, Self::Error> {
+        Hash::from_bytes(&value)
     }
 }
 
-impl BinarySerializable<'_> for OffchainPublicKey {
+impl From<Hash> for [u8; 32] {
+    fn from(value: Hash) -> Self {
+        value.hash
+    }
+}
+
+/// Represents an Ed25519 public key.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
+pub struct OffchainPublicKey {
+    compressed: CompressedEdwardsY,
+}
+
+impl BinarySerializable for OffchainPublicKey {
     const SIZE: usize = 32;
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
         if data.len() == Self::SIZE {
             Ok(Self {
-                key: CompressedEdwardsY::from_slice(data).map_err(|_| ParseError)?,
+                compressed: CompressedEdwardsY::from_slice(data).map_err(|_| ParseError)?,
             })
         } else {
             Err(ParseError)
@@ -518,7 +532,15 @@ impl BinarySerializable<'_> for OffchainPublicKey {
     }
 
     fn to_bytes(&self) -> Box<[u8]> {
-        self.key.to_bytes().into()
+        self.compressed.to_bytes().into()
+    }
+}
+
+impl TryFrom<[u8; OffchainPublicKey::SIZE]> for OffchainPublicKey {
+    type Error = GeneralError;
+
+    fn try_from(value: [u8; OffchainPublicKey::SIZE]) -> std::result::Result<Self, Self::Error> {
+        OffchainPublicKey::from_bytes(&value)
     }
 }
 
@@ -526,16 +548,19 @@ impl PeerIdLike for OffchainPublicKey {
     fn from_peerid(peer_id: &PeerId) -> utils_types::errors::Result<Self> {
         let mh = peer_id.as_ref();
         if mh.code() == 0 {
-            Self::from_bytes(&mh.digest()[4..])
+            libp2p_identity::PublicKey::try_decode_protobuf(mh.digest())
+                .map_err(|_| ParseError)
+                .and_then(|pk| pk.try_into_ed25519().map(|p| p.to_bytes()).map_err(|_| ParseError))
+                .and_then(|pk| CompressedEdwardsY::from_slice(&pk).map_err(|_| ParseError))
+                .map(|compressed| Self { compressed })
         } else {
-            warn!("peer id type not supported: {peer_id}");
             Err(ParseError)
         }
     }
 
     fn to_peerid(&self) -> PeerId {
-        let k = libp2p_identity::ed25519::PublicKey::try_from_bytes(self.key.as_bytes()).unwrap();
-        PeerId::from_public_key(&lp2p_PublicKey::from(k))
+        let k = libp2p_identity::ed25519::PublicKey::try_from_bytes(self.compressed.as_bytes()).unwrap();
+        PeerId::from_public_key(&k.into())
     }
 }
 
@@ -546,21 +571,25 @@ impl Display for OffchainPublicKey {
 }
 
 impl OffchainPublicKey {
-    /// Generates new random keypair (private key, public key)
-    pub fn random_keypair() -> ([u8; 32], Self) {
-        let scalar = curve25519_dalek::Scalar::random(&mut OsRng);
-        let point = EdwardsPoint::mul_base(&scalar);
-        (scalar.to_bytes(), Self { key: point.compress() })
+    pub fn from_privkey(private_key: &[u8]) -> Result<Self> {
+        let mut pk: [u8; ed25519_dalek::SECRET_KEY_LENGTH] = private_key.try_into().map_err(|_| InvalidInputValue)?;
+        let sk = libp2p_identity::ed25519::SecretKey::try_from_bytes(&mut pk).map_err(|_| InvalidInputValue)?;
+        let kp: libp2p_identity::ed25519::Keypair = sk.into();
+        Ok(Self {
+            compressed: CompressedEdwardsY::from_slice(&kp.public().to_bytes()).map_err(|_| ParseError)?,
+        })
     }
+}
 
-    pub fn from_privkey(key: &[u8]) -> Result<Self> {
-        let scalar = curve25519_dalek::Scalar::from_bytes_mod_order(key.try_into().map_err(|_| InvalidInputValue)?);
-        let point = EdwardsPoint::mul_base(&scalar);
-        if !point.is_identity() && !point.is_small_order() {
-            Ok(Self { key: point.compress() })
-        } else {
-            Err(InvalidSecretScalar)
-        }
+impl From<&OffchainPublicKey> for EdwardsPoint {
+    fn from(value: &OffchainPublicKey) -> Self {
+        value.compressed.decompress().unwrap()
+    }
+}
+
+impl From<&OffchainPublicKey> for MontgomeryPoint {
+    fn from(value: &OffchainPublicKey) -> Self {
+        value.compressed.decompress().unwrap().to_montgomery()
     }
 }
 
@@ -570,7 +599,7 @@ impl OffchainPublicKey {
 #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct PublicKey {
     key: elliptic_curve::PublicKey<Secp256k1>,
-    compressed: Box<[u8]>,
+    pub(crate) compressed: EncodedPoint<Secp256k1>,
 }
 
 #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
@@ -592,7 +621,7 @@ impl PublicKey {
     /// Serializes the public key to a binary form.
     pub fn to_bytes(&self, compressed: bool) -> Box<[u8]> {
         if compressed {
-            self.compressed.clone()
+            self.compressed.to_bytes()
         } else {
             self.key.as_affine().to_encoded_point(false).to_bytes()
         }
@@ -611,27 +640,6 @@ impl Display for PublicKey {
     }
 }
 
-impl PeerIdLike for PublicKey {
-    fn from_peerid(peer_id: &PeerId) -> utils_types::errors::Result<Self> {
-        let mh = peer_id.as_ref();
-        if mh.code() == 0 {
-            Self::from_bytes(&mh.digest()[4..])
-        } else {
-            warn!("peer id type not supported: {peer_id}");
-            Err(ParseError)
-        }
-    }
-
-    // TODO: Once the enum is made opaque as described in the deprecation note, a workaround must be done.
-    // Possibly by constructing directly the protobuf structure and then parsing it via l2p_PublicKey::from_protobuf_encoding
-    #[allow(deprecated)]
-    fn to_peerid(&self) -> PeerId {
-        PeerId::from_public_key(&lp2p_PublicKey::Secp256k1(
-            lp2p_k256_PublicKey::decode(&self.compressed).expect("cannot convert this public key to secp256k1 peer id"),
-        ))
-    }
-}
-
 impl TryFrom<CurvePoint> for PublicKey {
     type Error = CryptoError;
 
@@ -639,17 +647,8 @@ impl TryFrom<CurvePoint> for PublicKey {
         let key = elliptic_curve::PublicKey::<Secp256k1>::from_affine(value.affine).map_err(|_| InvalidInputValue)?;
         Ok(Self {
             key,
-            compressed: key.to_encoded_point(true).to_bytes(),
+            compressed: key.to_encoded_point(true),
         })
-    }
-}
-
-impl From<elliptic_curve::PublicKey<Secp256k1>> for PublicKey {
-    fn from(key: elliptic_curve::PublicKey<Secp256k1>) -> Self {
-        Self {
-            key,
-            compressed: key.to_encoded_point(true).to_bytes(),
-        }
     }
 }
 
@@ -657,41 +656,48 @@ impl PublicKey {
     /// Size of the compressed public key in bytes
     pub const SIZE_COMPRESSED: usize = 33;
 
+    pub const SIZE_UNCOMPRESSED_PLAIN: usize = 64;
+
     /// Size of the uncompressed public key in bytes
     pub const SIZE_UNCOMPRESSED: usize = 65;
 
     /// Generates new random keypair (private key, public key)
     pub fn random_keypair() -> ([u8; 32], PublicKey) {
         let (private, cp) = random_group_element();
-        (private, PublicKey::try_from(cp).unwrap())
+        (private, cp.try_into().unwrap())
     }
 
     pub fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
-        if [
-            Self::SIZE_UNCOMPRESSED,
-            Self::SIZE_UNCOMPRESSED - 1,
-            Self::SIZE_COMPRESSED,
-        ]
-        .contains(&data.len())
-        {
-            let key;
-            if data.len() == Self::SIZE_UNCOMPRESSED - 1 {
-                key = elliptic_curve::PublicKey::<Secp256k1>::from_sec1_bytes(&[&[4u8], &data[..]].concat())
-                    .map_err(|_| ParseError)?
-            } else {
-                key = elliptic_curve::PublicKey::<Secp256k1>::from_sec1_bytes(data).map_err(|_| ParseError)?
-            }
+        match data.len() {
+            Self::SIZE_UNCOMPRESSED => {
+                // already has 0x04 prefix
+                let key = elliptic_curve::PublicKey::<Secp256k1>::from_sec1_bytes(data).map_err(|_| ParseError)?;
 
-            Ok(PublicKey {
-                key,
-                compressed: if data.len() == Self::SIZE_COMPRESSED {
-                    data.into()
-                } else {
-                    key.to_encoded_point(true).to_bytes()
-                },
-            })
-        } else {
-            Err(ParseError)
+                Ok(PublicKey {
+                    key,
+                    compressed: key.to_encoded_point(true),
+                })
+            }
+            Self::SIZE_UNCOMPRESSED_PLAIN => {
+                // add 0x04 prefix
+                let key = elliptic_curve::PublicKey::<Secp256k1>::from_sec1_bytes(&[&[4u8], data].concat())
+                    .map_err(|_| ParseError)?;
+
+                Ok(PublicKey {
+                    key,
+                    compressed: key.to_encoded_point(true),
+                })
+            }
+            Self::SIZE_COMPRESSED => {
+                // has either 0x02 or 0x03 prefix
+                let key = elliptic_curve::PublicKey::<Secp256k1>::from_sec1_bytes(data).map_err(|_| ParseError)?;
+
+                Ok(PublicKey {
+                    key,
+                    compressed: key.to_encoded_point(true),
+                })
+            }
+            _ => Err(ParseError),
         }
     }
 
@@ -701,7 +707,7 @@ impl PublicKey {
         let key = elliptic_curve::PublicKey::<Secp256k1>::from_secret_scalar(&secret_scalar);
         Ok(PublicKey {
             key,
-            compressed: key.to_encoded_point(true).to_bytes(),
+            compressed: key.to_encoded_point(true),
         })
     }
 
@@ -742,7 +748,7 @@ impl PublicKey {
     /// Panics if reaches infinity (EC identity point), which is an invalid public key.
     pub fn combine(summands: &[&PublicKey]) -> PublicKey {
         let cps = summands.iter().map(|pk| CurvePoint::from(*pk)).collect::<Vec<_>>();
-        let cps_ref = cps.iter().map(|cp| cp).collect::<Vec<_>>();
+        let cps_ref = cps.iter().collect::<Vec<_>>();
         CurvePoint::combine(&cps_ref)
             .try_into()
             .expect("combination results in the ec identity (which is an invalid pub key)")
@@ -760,8 +766,181 @@ impl PublicKey {
         Self {
             key: elliptic_curve::PublicKey::<Secp256k1>::from_affine(new_pk)
                 .expect("combination results into ec identity (which is an invalid pub key)"),
-            compressed: new_pk.to_encoded_point(true).to_bytes(),
+            compressed: new_pk.to_encoded_point(true),
         }
+    }
+}
+
+impl From<elliptic_curve::PublicKey<Secp256k1>> for PublicKey {
+    fn from(key: elliptic_curve::PublicKey<Secp256k1>) -> Self {
+        Self {
+            key,
+            compressed: key.to_encoded_point(true),
+        }
+    }
+}
+
+impl From<&PublicKey> for k256::ProjectivePoint {
+    fn from(value: &PublicKey) -> Self {
+        value.key.to_projective()
+    }
+}
+
+/// Represents a compressed serializable extension of the `PublicKey` using the secp256k1 curve.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CompressedPublicKey(pub PublicKey);
+
+impl BinarySerializable for CompressedPublicKey {
+    const SIZE: usize = PublicKey::SIZE_COMPRESSED;
+
+    fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
+        PublicKey::from_bytes(data).map(CompressedPublicKey)
+    }
+
+    fn to_bytes(&self) -> Box<[u8]> {
+        self.0.to_bytes(true)
+    }
+}
+
+impl From<PublicKey> for CompressedPublicKey {
+    fn from(value: PublicKey) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&CompressedPublicKey> for k256::ProjectivePoint {
+    fn from(value: &CompressedPublicKey) -> Self {
+        (&value.0).into()
+    }
+}
+
+impl CompressedPublicKey {
+    pub fn to_address(&self) -> Address {
+        self.0.to_address()
+    }
+}
+
+/// Bundles values given to the smart contract to prove that a ticket is a win.
+///
+/// The VRF is thereby needed because it generates on-demand determinitstic
+/// entropy that can only be derived by the ticket redeemer.
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VrfParameters {
+    /// the pseudo-random point
+    pub v: CurvePoint,
+    pub h: Scalar,
+    pub s: Scalar,
+    /// helper value for smart contract
+    pub h_v: CurvePoint,
+    /// helper value for smart contract
+    pub s_b: CurvePoint,
+}
+
+impl std::fmt::Display for VrfParameters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v_encoded = self.v.affine.to_encoded_point(false);
+        let h_v_encoded = self.h_v.affine.to_encoded_point(false);
+        let s_b_encoded = self.s_b.affine.to_encoded_point(false);
+        f.debug_struct("VrfParameters")
+            .field(
+                "V",
+                &format!(
+                    "({},{})",
+                    hex::encode(v_encoded.x().unwrap()),
+                    hex::encode(v_encoded.y().unwrap())
+                ),
+            )
+            .field("h", &hex::encode(self.h.to_bytes()))
+            .field("s", &hex::encode(self.s.to_bytes()))
+            .field(
+                "h_v",
+                &format!(
+                    "({},{})",
+                    hex::encode(h_v_encoded.x().unwrap()),
+                    hex::encode(h_v_encoded.y().unwrap())
+                ),
+            )
+            .field(
+                "s_b",
+                &format!(
+                    "({},{})",
+                    hex::encode(s_b_encoded.x().unwrap()),
+                    hex::encode(s_b_encoded.y().unwrap())
+                ),
+            )
+            .finish()
+    }
+}
+
+impl BinarySerializable for VrfParameters {
+    const SIZE: usize = CurvePoint::SIZE + 32 + 32 + CurvePoint::SIZE + CurvePoint::SIZE;
+
+    fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
+        if data.len() == Self::SIZE {
+            Ok(VrfParameters {
+                v: CurvePoint::from_bytes(&data[0..CurvePoint::SIZE]).unwrap(),
+                h: k256::Scalar::from_bytes(&data[CurvePoint::SIZE..CurvePoint::SIZE + 32]).unwrap(),
+                s: k256::Scalar::from_bytes(&data[CurvePoint::SIZE + 32..CurvePoint::SIZE + 32 + 32]).unwrap(),
+                h_v: CurvePoint::from_bytes(
+                    &data[CurvePoint::SIZE + 32 + 32..CurvePoint::SIZE + 32 + 32 + CurvePoint::SIZE],
+                )
+                .unwrap(),
+                s_b: CurvePoint::from_bytes(
+                    &data[CurvePoint::SIZE + 32 + 32 + CurvePoint::SIZE
+                        ..CurvePoint::SIZE + 32 + 32 + CurvePoint::SIZE + CurvePoint::SIZE],
+                )
+                .unwrap(),
+            })
+        } else {
+            Err(ParseError)
+        }
+    }
+
+    fn to_bytes(&self) -> Box<[u8]> {
+        let mut ret = Vec::with_capacity(Self::SIZE);
+        ret.extend_from_slice(&self.v.to_bytes());
+        ret.extend_from_slice(&self.h.to_bytes());
+        ret.extend_from_slice(&self.s.to_bytes());
+        ret.extend_from_slice(&self.h_v.to_bytes());
+        ret.extend_from_slice(&self.s_b.to_bytes());
+        ret.into_boxed_slice()
+    }
+}
+
+impl VrfParameters {
+    /// Verifies that VRF values are valid
+    pub fn verify<const T: usize>(&self, creator: &Address, msg: &[u8; T], dst: &[u8]) -> Result<()> {
+        let cap_b =
+            Secp256k1::hash_from_bytes::<ExpandMsgXmd<sha3::Keccak256>>(&[&creator.to_bytes(), msg], &[dst]).unwrap();
+
+        // Check point witness
+        if self.s_b.to_projective_point() != cap_b * self.s {
+            return Err(CalculationError);
+        }
+
+        // Check point witness
+        if self.h_v.to_projective_point() != self.v.to_projective_point() * self.h {
+            return Err(CalculationError);
+        }
+
+        let r_v: ProjectivePoint<Secp256k1> = cap_b * self.s - self.v.to_projective_point() * self.h;
+
+        let h_check = Secp256k1::hash_to_scalar::<ExpandMsgXmd<sha3::Keccak256>>(
+            &[
+                &creator.to_bytes(),
+                &self.v.to_bytes()[1..],
+                &r_v.to_affine().to_encoded_point(false).as_bytes()[1..],
+                msg,
+            ],
+            &[dst],
+        )
+        .unwrap();
+
+        if h_check != self.h {
+            return Err(CalculationError);
+        }
+
+        Ok(())
     }
 }
 
@@ -785,6 +964,12 @@ impl Default for Response {
                 .as_slice(),
         );
         ret
+    }
+}
+
+impl std::fmt::Display for Response {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.to_hex().as_str())
     }
 }
 
@@ -812,7 +997,7 @@ impl Response {
     /// Derives the response from two half-keys.
     /// This is done by adding the two non-zero scalars that the given half-keys represent.
     pub fn from_half_keys(first: &HalfKey, second: &HalfKey) -> Result<Self> {
-        let res = NonZeroScalar::<Secp256k1>::try_from(HalfKey::to_bytes(&first).as_ref())
+        let res = NonZeroScalar::<Secp256k1>::try_from(HalfKey::to_bytes(first).as_ref())
             .and_then(|s1| {
                 NonZeroScalar::<Secp256k1>::try_from(second.to_bytes().as_ref()).map(|s2| s1.as_ref() + s2.as_ref())
             })
@@ -822,7 +1007,7 @@ impl Response {
     }
 }
 
-impl BinarySerializable<'_> for Response {
+impl BinarySerializable for Response {
     const SIZE: usize = 32;
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
@@ -838,6 +1023,59 @@ impl BinarySerializable<'_> for Response {
     }
 }
 
+/// Represents an EdDSA signature using Ed25519 Edwards curve.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
+pub struct OffchainSignature {
+    signature: ed25519_dalek::Signature,
+}
+
+#[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
+impl OffchainSignature {
+    pub fn sign_message(msg: &[u8], signing_keypair: &OffchainKeypair) -> Self {
+        let expanded_sk = ed25519_dalek::ExpandedSecretKey::from(
+            &ed25519_dalek::SecretKey::from_bytes(signing_keypair.secret().as_ref()).expect("invalid private key"),
+        );
+
+        let verifying = ed25519_dalek::PublicKey::from_bytes(signing_keypair.public().compressed.as_bytes()).unwrap();
+        Self {
+            signature: expanded_sk.sign(msg, &verifying),
+        }
+    }
+
+    pub fn verify_message(&self, msg: &[u8], public_key: &OffchainPublicKey) -> bool {
+        let pk = ed25519_dalek::PublicKey::from_bytes(public_key.compressed.as_bytes()).unwrap();
+        pk.verify_strict(msg, &self.signature).is_ok()
+    }
+}
+
+impl BinarySerializable for OffchainSignature {
+    const SIZE: usize = ed25519_dalek::Signature::BYTE_SIZE;
+
+    fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
+        ed25519_dalek::Signature::from_bytes(data)
+            .map_err(|_| ParseError)
+            .map(|signature| Self { signature })
+    }
+
+    fn to_bytes(&self) -> Box<[u8]> {
+        self.signature.to_bytes().into()
+    }
+}
+
+impl TryFrom<([u8; 32], [u8; 32])> for OffchainSignature {
+    type Error = GeneralError;
+
+    fn try_from(value: ([u8; 32], [u8; 32])) -> std::result::Result<Self, Self::Error> {
+        let mut sig = [0u8; OffchainSignature::SIZE];
+
+        sig[0..32].copy_from_slice(&value.0);
+        sig[32..64].copy_from_slice(&value.1);
+
+        OffchainSignature::from_bytes(&sig)
+    }
+}
+
 /// Represents an ECDSA signature based on the secp256k1 curve with recoverable public key.
 /// This signature encodes the 2-bit recovery information into the
 /// upper-most bits of MSB of the S value, which are never used by this ECDSA
@@ -845,7 +1083,6 @@ impl BinarySerializable<'_> for Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct Signature {
-    // TODO: The signature will be secp256k1 only, it will not accept Ed25519 public keys
     #[serde(with = "arrays")]
     signature: [u8; Self::SIZE],
     recovery: u8,
@@ -880,16 +1117,18 @@ impl Signature {
         ret
     }
 
-    /// Signs the given message using the raw private key.
-    pub fn sign_message(message: &[u8], private_key: &[u8]) -> Signature {
-        Self::sign(message, private_key, |k: &SigningKey, data: &[u8]| {
-            k.sign_recoverable(data)
-        })
+    /// Signs the given message using the chain private key.
+    pub fn sign_message(message: &[u8], chain_keypair: &ChainKeypair) -> Signature {
+        Self::sign(
+            message,
+            chain_keypair.secret().as_ref(),
+            |k: &SigningKey, data: &[u8]| k.sign_recoverable(data),
+        )
     }
 
     /// Signs the given hash using the raw private key.
-    pub fn sign_hash(hash: &[u8], private_key: &[u8]) -> Signature {
-        Self::sign(hash, private_key, |k: &SigningKey, data: &[u8]| {
+    pub fn sign_hash(hash: &[u8], chain_keypair: &ChainKeypair) -> Signature {
+        Self::sign(hash, chain_keypair.secret().as_ref(), |k: &SigningKey, data: &[u8]| {
             k.sign_prehash_recoverable(data)
         })
     }
@@ -908,24 +1147,16 @@ impl Signature {
         }
     }
 
-    /// Verifies this signature against the given message and a public key (compressed or uncompressed)
-    pub fn verify_message(&self, message: &[u8], public_key: &[u8]) -> bool {
-        self.verify(message, public_key, |k, msg, sgn| k.verify(msg, sgn))
-    }
-
     /// Verifies this signature against the given message and a public key object
-    pub fn verify_message_with_pubkey(&self, message: &[u8], public_key: &PublicKey) -> bool {
-        self.verify_message(message, &public_key.to_bytes(false))
+    pub fn verify_message(&self, message: &[u8], public_key: &PublicKey) -> bool {
+        self.verify(message, &public_key.to_bytes(false), |k, msg, sgn| k.verify(msg, sgn))
     }
 
-    /// Verifies this signature against the given hash and a public key (compressed or uncompressed)
-    pub fn verify_hash(&self, hash: &[u8], public_key: &[u8]) -> bool {
-        self.verify(hash, public_key, |k, msg, sgn| k.verify_prehash(msg, sgn))
-    }
-
-    /// Verifies this signature against the given message and a public key object
-    pub fn verify_hash_with_pubkey(&self, hash: &[u8], public_key: &PublicKey) -> bool {
-        self.verify_hash(hash, &public_key.to_bytes(false))
+    /// Verifies this signature against the given hash and a public key object
+    pub fn verify_hash(&self, hash: &[u8], public_key: &PublicKey) -> bool {
+        self.verify(hash, &public_key.to_bytes(false), |k, msg, sgn| {
+            k.verify_prehash(msg, sgn)
+        })
     }
 
     /// Returns the raw signature, without the encoded public key recovery bit.
@@ -934,7 +1165,7 @@ impl Signature {
     }
 }
 
-impl BinarySerializable<'_> for Signature {
+impl BinarySerializable for Signature {
     const SIZE: usize = 64;
 
     fn from_bytes(data: &[u8]) -> utils_types::errors::Result<Self> {
@@ -1001,59 +1232,118 @@ impl ToChecksum for Address {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::random::random_group_element;
+    use crate::{
+        derivation::derive_vrf_parameters,
+        keypairs::{ChainKeypair, Keypair, OffchainKeypair},
+        random::random_group_element,
+        types::{
+            Challenge, CurvePoint, HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey, OffchainSignature, PublicKey,
+            Response, Signature, ToChecksum, VrfParameters,
+        },
+    };
+    use ed25519_dalek::Signer;
     use hex_literal::hex;
-    use k256::ecdsa::VerifyingKey;
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
-    use k256::elliptic_curve::CurveArithmetic;
-    use k256::{NonZeroScalar, Secp256k1, U256};
+    use k256::{
+        ecdsa::VerifyingKey,
+        elliptic_curve::{sec1::ToEncodedPoint, CurveArithmetic},
+        {NonZeroScalar, Secp256k1, U256},
+    };
     use libp2p_identity::PeerId;
     use std::str::FromStr;
-    use utils_types::primitives::Address;
-    use utils_types::traits::{BinarySerializable, PeerIdLike, ToHex};
-
-    use crate::types::{
-        Challenge, CurvePoint, HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey, PublicKey, Response, Signature,
-        ToChecksum,
+    use utils_types::{
+        primitives::Address,
+        traits::{BinarySerializable, PeerIdLike, ToHex},
     };
 
     const PUBLIC_KEY: [u8; 33] = hex!("021464586aeaea0eb5736884ca1bf42d165fc8e2243b1d917130fb9e321d7a93b8");
+    const PUBLIC_KEY_UNCOMPRESSED_PLAIN: [u8; 64] = hex!("1464586aeaea0eb5736884ca1bf42d165fc8e2243b1d917130fb9e321d7a93b8fb0699d4f177f9c84712f6d7c5f6b7f4f6916116047fa25c79ef806fc6c9523e");
+    const PUBLIC_KEY_UNCOMPRESSED: [u8; 65] = hex!("041464586aeaea0eb5736884ca1bf42d165fc8e2243b1d917130fb9e321d7a93b8fb0699d4f177f9c84712f6d7c5f6b7f4f6916116047fa25c79ef806fc6c9523e");
     const PRIVATE_KEY: [u8; 32] = hex!("e17fe86ce6e99f4806715b0c9412f8dad89334bf07f72d5834207a9d8f19d7f8");
 
     #[test]
     fn signature_signing_test() {
         let msg = b"test12345";
-        let sgn = Signature::sign_message(msg, &PRIVATE_KEY);
+        let kp = ChainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+        let sgn = Signature::sign_message(msg, &kp);
 
-        assert!(sgn.verify_message(msg, &PUBLIC_KEY));
+        let expected_pk = PublicKey::from_bytes(&PUBLIC_KEY).unwrap();
+        assert!(sgn.verify_message(msg, &expected_pk));
 
         let extracted_pk = PublicKey::from_signature(msg, &sgn).unwrap();
-        let expected_pk = PublicKey::from_bytes(&PUBLIC_KEY).unwrap();
         assert_eq!(expected_pk, extracted_pk, "key extracted from signature does not match");
+    }
+
+    #[test]
+    fn offchain_signature_signing_test() {
+        let msg = b"test12345";
+        let keypair = OffchainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+
+        let key = ed25519_dalek::SecretKey::from_bytes(&PRIVATE_KEY).unwrap();
+        let pk: ed25519_dalek::PublicKey = (&key).into();
+        let kp = ed25519_dalek::Keypair {
+            secret: key,
+            public: pk.clone(),
+        };
+
+        let sgn = kp.sign(msg);
+        assert!(pk.verify_strict(msg, &sgn).is_ok(), "blomp");
+
+        let sgn_1 = OffchainSignature::sign_message(msg, &keypair);
+        let sgn_2 = OffchainSignature::from_bytes(&sgn_1.to_bytes()).unwrap();
+
+        assert!(
+            sgn_1.verify_message(msg, keypair.public()),
+            "cannot verify message via sig 1"
+        );
+        assert!(
+            sgn_2.verify_message(msg, keypair.public()),
+            "cannot verify message via sig 2"
+        );
+        assert_eq!(sgn_1, sgn_2, "signatures must be equal");
     }
 
     #[test]
     fn signature_serialize_test() {
         let msg = b"test000000";
-        let sgn = Signature::sign_message(msg, &PRIVATE_KEY);
+        let kp = ChainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+        let sgn = Signature::sign_message(msg, &kp);
 
         let deserialized = Signature::from_bytes(&sgn.to_bytes()).unwrap();
         assert_eq!(sgn, deserialized, "signatures don't match");
     }
 
     #[test]
-    fn public_key_peerid_test() {
-        let pk1 = PublicKey::from_bytes(&PUBLIC_KEY).expect("failed to deserialize");
+    fn offchain_signature() {
+        let msg = b"test12345";
+        let keypair = OffchainKeypair::from_secret(&PRIVATE_KEY).unwrap();
 
-        let pk2 = PublicKey::from_peerid_str(pk1.to_peerid_str().as_str()).expect("peer id serialization failed");
+        let key = ed25519_dalek::SecretKey::from_bytes(&PRIVATE_KEY).unwrap();
+        let pk: ed25519_dalek::PublicKey = (&key).into();
+        let kp = ed25519_dalek::Keypair {
+            secret: key,
+            public: pk.clone(),
+        };
 
-        assert_eq!(pk1, pk2, "pubkeys don't match");
-        assert_eq!(pk1.to_peerid_str(), pk2.to_peerid_str(), "peer id strings don't match");
+        let sgn = kp.sign(msg);
+        assert!(pk.verify_strict(msg, &sgn).is_ok(), "blomp");
 
-        let invalid_peerid = PeerId::from_str("12D3KooWLYKsvDB4xEELYoHXxeStj2gzaDXjra2uGaFLpKCZkJHs").unwrap();
-        let invalid = PublicKey::from_peerid(&invalid_peerid);
+        let sgn_1 = OffchainSignature::sign_message(msg, &keypair);
+        let sgn_2 = OffchainSignature::from_bytes(&sgn_1.to_bytes()).unwrap();
 
-        assert!(invalid.is_err(), "must not work with ed25519 peer ids");
+        assert!(
+            sgn_1.verify_message(msg, keypair.public()),
+            "cannot verify message via sig 1"
+        );
+        assert!(
+            sgn_2.verify_message(msg, keypair.public()),
+            "cannot verify message via sig 2"
+        );
+        assert_eq!(sgn_1, sgn_2, "signatures must be equal");
+        // let keypair = OffchainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+
+        // let sig = OffchainSignature::sign_message("my test msg".as_bytes(), &keypair);
+
+        // assert!(sig.verify_message("my test msg".as_bytes(), keypair.public()));
     }
 
     #[test]
@@ -1064,7 +1354,7 @@ pub mod tests {
         .unwrap();
 
         assert_eq!("0x39d1bc2291826eaed86567d225cf243ebc637275e0a5aedb0d6b1dc82136a38e428804340d4c949a029846f682711d046920b4ca8b8ebeb9d1192b5bdaa54dba",
-                   pk.to_hex(false));
+            pk.to_hex(false));
         assert_eq!(
             "0x0239d1bc2291826eaed86567d225cf243ebc637275e0a5aedb0d6b1dc82136a38e",
             pk.to_hex(true)
@@ -1109,39 +1399,42 @@ pub mod tests {
     fn sign_and_recover_test() {
         let msg = hex!("eff80b9f035b1d369c6a60f362ac7c8b8c3b61b76d151d1be535145ccaa3e83e");
 
-        let signature1 = Signature::sign_message(&msg, &PRIVATE_KEY);
-        let signature2 = Signature::sign_hash(&msg, &PRIVATE_KEY);
+        let kp = ChainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+
+        let signature1 = Signature::sign_message(&msg, &kp);
+        let signature2 = Signature::sign_hash(&msg, &kp);
 
         let pub_key1 = PublicKey::from_privkey(&PRIVATE_KEY).unwrap();
         let pub_key2 = PublicKey::from_signature(&msg, &signature1).unwrap();
         let pub_key3 = PublicKey::from_signature_hash(&msg, &signature2).unwrap();
 
+        assert_eq!(pub_key1, kp.public().0);
         assert_eq!(pub_key1, pub_key2, "recovered public key does not match");
         assert_eq!(pub_key1, pub_key3, "recovered public key does not match");
 
         assert!(
-            signature1.verify_message_with_pubkey(&msg, &pub_key1),
+            signature1.verify_message(&msg, &pub_key1),
             "signature 1 verification failed with pub key 1"
         );
         assert!(
-            signature1.verify_message_with_pubkey(&msg, &pub_key2),
+            signature1.verify_message(&msg, &pub_key2),
             "signature 1 verification failed with pub key 2"
         );
         assert!(
-            signature1.verify_message_with_pubkey(&msg, &pub_key3),
+            signature1.verify_message(&msg, &pub_key3),
             "signature 1 verification failed with pub key 3"
         );
 
         assert!(
-            signature2.verify_hash_with_pubkey(&msg, &pub_key1),
+            signature2.verify_hash(&msg, &pub_key1),
             "signature 2 verification failed with pub key 1"
         );
         assert!(
-            signature2.verify_hash_with_pubkey(&msg, &pub_key2),
+            signature2.verify_hash(&msg, &pub_key2),
             "signature 2 verification failed with pub key 2"
         );
         assert!(
-            signature2.verify_hash_with_pubkey(&msg, &pub_key3),
+            signature2.verify_hash(&msg, &pub_key3),
             "signature 2 verification failed with pub key 3"
         );
     }
@@ -1154,6 +1447,13 @@ pub mod tests {
 
         assert_eq!(pk1, pk2, "pub keys 1 2 don't match");
         assert_eq!(pk2, pk3, "pub keys 2 3 don't match");
+
+        let pk1 = PublicKey::from_bytes(&PUBLIC_KEY).expect("failed to deserialize");
+        let pk2 = PublicKey::from_bytes(&PUBLIC_KEY_UNCOMPRESSED).expect("failed to deserialize");
+        let pk3 = PublicKey::from_bytes(&PUBLIC_KEY_UNCOMPRESSED_PLAIN).expect("failed to deserialize");
+
+        assert_eq!(pk1, pk2, "pubkeys don't match");
+        assert_eq!(pk2, pk3, "pubkeys don't match");
 
         assert_eq!(PublicKey::SIZE_COMPRESSED, pk1.to_bytes(true).len());
         assert_eq!(PublicKey::SIZE_UNCOMPRESSED, pk1.to_bytes(false).len());
@@ -1181,27 +1481,34 @@ pub mod tests {
 
     #[test]
     fn offchain_public_key_test() {
-        let (s, pk1) = OffchainPublicKey::random_keypair();
+        let (s, pk1) = OffchainKeypair::random().unzip();
 
-        let pk2 = OffchainPublicKey::from_privkey(&s).unwrap();
-        assert_eq!(pk1, pk2);
+        let pk2 = OffchainPublicKey::from_privkey(s.as_ref()).unwrap();
+        assert_eq!(pk1, pk2, "from privkey failed");
 
         let pk3 = OffchainPublicKey::from_bytes(&pk1.to_bytes()).unwrap();
-        assert_eq!(pk1, pk3);
+        assert_eq!(pk1, pk3, "from bytes failed");
     }
 
     #[test]
-    fn offchain_pubkc_key_peerid_test() {
-        let peerid = PeerId::from_str("12D3KooWLYKsvDB4xEELYoHXxeStj2gzaDXjra2uGaFLpKCZkJHs").unwrap();
+    fn offchain_public_key_peerid_test() {
+        let (_, pk1) = OffchainKeypair::random().unzip();
+        let pk2 =
+            OffchainPublicKey::from_peerid_str(pk1.to_peerid_str().as_str()).expect("peer id serialization failed");
+        assert_eq!(pk1, pk2, "pubkeys don't match");
+        assert_eq!(pk1.to_peerid_str(), pk2.to_peerid_str(), "peer id strings don't match");
 
-        let pk = OffchainPublicKey::from_peerid(&peerid).unwrap();
-
-        assert_eq!(peerid, pk.to_peerid());
+        let valid_peerid = PeerId::from_str("12D3KooWLYKsvDB4xEELYoHXxeStj2gzaDXjra2uGaFLpKCZkJHs").unwrap();
+        let valid = OffchainPublicKey::from_peerid(&valid_peerid).unwrap();
+        assert_eq!(valid_peerid, valid.to_peerid(), "must work with ed25519 peer ids");
 
         let invalid_peerid = PeerId::from_str("16Uiu2HAmPHGyJ7y1Rj3kJ64HxJQgM9rASaeT2bWfXF9EiX3Pbp3K").unwrap();
-
         let invalid = OffchainPublicKey::from_peerid(&invalid_peerid);
         assert!(invalid.is_err(), "must not work with secp256k1 peer ids");
+
+        let invalid_peerid_2 = PeerId::from_str("QmWvEwidPYBbLHfcZN6ATHdm4NPM4KbUx72LZnZRoRNKEN").unwrap();
+        let invalid_2 = OffchainPublicKey::from_peerid(&invalid_peerid_2);
+        assert!(invalid_2.is_err(), "must not work with rsa peer ids");
     }
 
     #[test]
@@ -1264,11 +1571,9 @@ pub mod tests {
 
     #[test]
     fn half_key_challenge_test() {
-        let peer_id = PublicKey::from_bytes(&PUBLIC_KEY).unwrap().to_peerid();
-        let hkc1 = HalfKeyChallenge::from_peerid(&peer_id).unwrap();
+        let hkc1 = HalfKeyChallenge::from_bytes(&PUBLIC_KEY).unwrap();
         let hkc2 = HalfKeyChallenge::from_bytes(&hkc1.to_bytes()).unwrap();
         assert_eq!(hkc1, hkc2, "failed to match deserialized half key challenge");
-        assert_eq!(peer_id, hkc2.to_peerid(), "failed to match half-key challenge peer id");
     }
 
     #[test]
@@ -1354,6 +1659,30 @@ pub mod tests {
             "checksumed address does not match"
         );
     }
+
+    #[test]
+    fn vrf_values_serialize_deserialize() {
+        let keypair = ChainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+
+        let test_msg: [u8; 32] = hex!("8248a966b9215e154c8f673cb154da030916be3fb31af3b1220419a1c98eeaed");
+
+        let vrf_values = derive_vrf_parameters(&test_msg, &keypair, &Hash::default().to_bytes()).unwrap();
+
+        assert_eq!(vrf_values, VrfParameters::from_bytes(&vrf_values.to_bytes()).unwrap());
+    }
+
+    #[test]
+    fn vrf_values_crypto() {
+        let keypair = ChainKeypair::from_secret(&PRIVATE_KEY).unwrap();
+
+        let test_msg: [u8; 32] = hex!("8248a966b9215e154c8f673cb154da030916be3fb31af3b1220419a1c98eeaed");
+
+        let vrf_values = derive_vrf_parameters(&test_msg, &keypair, &Hash::default().to_bytes()).unwrap();
+
+        assert!(vrf_values
+            .verify(&keypair.public().to_address(), &test_msg, &Hash::default().to_bytes())
+            .is_ok());
+    }
 }
 
 #[cfg(feature = "wasm")]
@@ -1368,7 +1697,8 @@ pub mod wasm {
     use wasm_bindgen::prelude::*;
 
     use crate::types::{
-        Challenge, CurvePoint, HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey, PublicKey, Response, Signature,
+        Challenge, CurvePoint, HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey, OffchainSignature, PublicKey,
+        Response, Signature,
     };
 
     #[wasm_bindgen]
@@ -1381,16 +1711,6 @@ pub mod wasm {
         #[wasm_bindgen(js_name = "from_str")]
         pub fn _from_str(str: &str) -> JsResult<CurvePoint> {
             ok_or_jserr!(Self::from_str(str))
-        }
-
-        #[wasm_bindgen(js_name = "from_peerid_str")]
-        pub fn _from_peerid_str(peer_id: &str) -> JsResult<CurvePoint> {
-            ok_or_jserr!(Self::from_peerid_str(peer_id))
-        }
-
-        #[wasm_bindgen(js_name = "to_peerid_str")]
-        pub fn _to_peerid_str(&self) -> String {
-            self.to_peerid_str()
         }
 
         #[wasm_bindgen(js_name = "deserialize")]
@@ -1512,19 +1832,9 @@ pub mod wasm {
             self.eq(other)
         }
 
-        #[wasm_bindgen(js_name = "to_peerid_str")]
-        pub fn _to_peerid_str(&self) -> String {
-            self.to_peerid_str()
-        }
-
         #[wasm_bindgen(js_name = "from_str")]
         pub fn _from_str(str: &str) -> JsResult<HalfKeyChallenge> {
             ok_or_jserr!(Self::from_str(str))
-        }
-
-        #[wasm_bindgen(js_name = "from_peerid_str")]
-        pub fn _from_peerid_str(peer_id: &str) -> JsResult<HalfKeyChallenge> {
-            ok_or_jserr!(Self::from_peerid_str(peer_id))
         }
 
         #[wasm_bindgen(js_name = "deserialize")]
@@ -1539,7 +1849,7 @@ pub mod wasm {
 
         #[wasm_bindgen(js_name = "clone")]
         pub fn _clone(&self) -> Self {
-            self.clone()
+            *self
         }
 
         #[wasm_bindgen]
@@ -1584,7 +1894,7 @@ pub mod wasm {
 
         #[wasm_bindgen(js_name = "clone")]
         pub fn _clone(&self) -> Self {
-            self.clone()
+            *self
         }
 
         #[wasm_bindgen]
@@ -1630,6 +1940,11 @@ pub mod wasm {
             self.clone()
         }
 
+        #[wasm_bindgen(js_name = "to_string")]
+        pub fn _to_string(&self) -> String {
+            self.to_hex()
+        }
+
         #[wasm_bindgen]
         pub fn size() -> u32 {
             Self::SIZE as u32
@@ -1648,7 +1963,7 @@ pub mod wasm {
         pub fn _random_keypair() -> KeyPair {
             let (private, public) = Self::random_keypair();
             KeyPair {
-                private: Box::new(private),
+                private: private.into(),
                 public,
             }
         }
@@ -1661,16 +1976,6 @@ pub mod wasm {
         #[wasm_bindgen(js_name = "serialize")]
         pub fn _serialize(&self, compressed: bool) -> Box<[u8]> {
             self.to_bytes(compressed)
-        }
-
-        #[wasm_bindgen(js_name = "from_peerid_str")]
-        pub fn _from_peerid_str(peer_id: &str) -> JsResult<PublicKey> {
-            ok_or_jserr!(PublicKey::from_peerid_str(peer_id))
-        }
-
-        #[wasm_bindgen(js_name = "to_peerid_str")]
-        pub fn _to_peerid_str(&self) -> String {
-            self.to_peerid_str()
         }
 
         #[wasm_bindgen(js_name = "from_signature")]
@@ -1746,6 +2051,34 @@ pub mod wasm {
         #[wasm_bindgen(js_name = "deserialize")]
         pub fn _deserialize(signature: &[u8]) -> JsResult<Signature> {
             ok_or_jserr!(Signature::from_bytes(signature))
+        }
+
+        #[wasm_bindgen(js_name = "to_hex")]
+        pub fn _to_hex(&self) -> String {
+            self.to_hex()
+        }
+
+        #[wasm_bindgen(js_name = "serialize")]
+        pub fn _serialize(&self) -> Box<[u8]> {
+            self.to_bytes()
+        }
+
+        #[wasm_bindgen(js_name = "clone")]
+        pub fn _clone(&self) -> Self {
+            self.clone()
+        }
+
+        #[wasm_bindgen]
+        pub fn size() -> u32 {
+            Self::SIZE as u32
+        }
+    }
+
+    #[wasm_bindgen]
+    impl OffchainSignature {
+        #[wasm_bindgen(js_name = "deserialize")]
+        pub fn _deserialize(signature: &[u8]) -> JsResult<OffchainSignature> {
+            ok_or_jserr!(OffchainSignature::from_bytes(signature))
         }
 
         #[wasm_bindgen(js_name = "to_hex")]

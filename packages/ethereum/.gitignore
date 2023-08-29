@@ -21,3 +21,10 @@ target/
 
 # ignore coverage test outpout
 contracts/lcov.info
+contracts/report
+
+# Ignore WASM bindings
+/lib
+
+# Ignore generated bindings source files
+crates/bindings/src

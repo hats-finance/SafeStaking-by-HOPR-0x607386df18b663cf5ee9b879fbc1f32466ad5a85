@@ -16,7 +16,7 @@ source "${mydir}/utils.sh"
 
 usage() {
   msg
-  msg "This script can be used to generate the OpenAPI spec file for hoprd's Rest API v2."
+  msg "This script can be used to generate the OpenAPI spec file for hoprd's Rest API v3."
   msg
   msg "Usage: $0"
   msg
@@ -25,7 +25,7 @@ usage() {
 # return early with help info when requested
 { [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; } && { usage; exit 0; }
 
-declare spec_file_path="${mydir}/../packages/hoprd/rest-api-v2-full-spec.json"
+declare spec_file_path="${mydir}/../packages/hoprd/rest-api-v3-full-spec.json"
 declare api_port=9876
 declare tmp="$(find_tmp_dir)"
 declare node_log_file="${tmp}/node.logs"
@@ -66,7 +66,7 @@ update_protocol_config_addresses "${protocol_config}" "${deployments_summary}" "
 
 log "Start hoprd node"
 env DEBUG="hopr*" CI="true" HOPRD_API_PORT="${api_port}" \
-  make -C "${mydir}/../" run-local > "${node_log_file}" 2>&1 &
+  make -C "${mydir}/../" run-local-with-safe > "${node_log_file}" 2>&1 &
 
 log "Wait 15 seconds for node startup to complete"
 sleep 15

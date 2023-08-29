@@ -3,11 +3,10 @@ use crate::key_pair::{create_identity, read_identities};
 use crate::password::PasswordArgs;
 use crate::utils::{Cmd, HelperErrors};
 use clap::{builder::RangedU64ValueParser, Parser};
+use hoprd_keypair::key_pair::HoprKeys;
 use log::{debug, error, info};
-use std::{
-    str::FromStr,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
+use std::str::FromStr;
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq, Eq)]
 pub enum IdentityActionType {
@@ -71,7 +70,7 @@ impl IdentityArgs {
             Err(e) => return Err(e),
         };
 
-        let mut node_identities = Vec::new();
+        let mut node_identities: HashMap<String, HoprKeys> = HashMap::new();
 
         match action {
             IdentityActionType::Create => {
@@ -81,18 +80,15 @@ impl IdentityArgs {
                 }
                 let local_id = local_identity.identity_from_directory.unwrap();
                 let id_dir = local_id.identity_directory.unwrap();
-                for _n in 1..=number {
+                for index in 0..=number - 1 {
                     // build file name
                     let file_prefix = match &local_id.identity_prefix {
-                        Some(ref provided_name) => Some(
-                            provided_name.to_owned()
-                                + &SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs().to_string(),
-                        ),
+                        Some(ref provided_name) => Some(provided_name.to_owned() + &index.to_string()),
                         None => None,
                     };
 
                     match create_identity(&id_dir, &pwd, &file_prefix) {
-                        Ok(identity) => node_identities.push(identity),
+                        Ok((id_filename, identity)) => _ = node_identities.insert(id_filename, identity),
                         Err(_) => return Err(HelperErrors::UnableToCreateIdentity),
                     }
                 }
@@ -102,11 +98,12 @@ impl IdentityArgs {
                 let files = local_identity.get_files();
                 debug!("Identities read {:?}", files.len());
                 match read_identities(files, &pwd) {
-                    Ok(identities) => node_identities.extend(identities),
+                    Ok(identities) => node_identities = identities,
                     Err(_) => return Err(HelperErrors::UnableToReadIdentity),
                 }
             }
         }
+
         info!("Identities: {:?}", node_identities);
         println!("{}", serde_json::to_string(&node_identities).unwrap());
         Ok(())

@@ -18,10 +18,20 @@
 - Add support for logs in wasm environment Rust tests ([#5108](https://github.com/hoprnet/hoprnet/pull/5108))
 - Migrate Packet and Acknowledgement interactions to Rust ([#5074](https://github.com/hoprnet/hoprnet/pull/5074))
 - Change keystore to hold `chain_key` and `packet_key` ([#5175](https://github.com/hoprnet/hoprnet/pull/5175))
+- Switch to Curve25519 to generate Sphinx keys, use Ed25519 PeerIDs for transport ([#5069](https://github.com/hoprnet/hoprnet/pull/5069))
 - Remove Avado build support ([#5181](https://github.com/hoprnet/hoprnet/pull/5181))
 - Upgrade to Node v18 as default runtime ([#5184](https://github.com/hoprnet/hoprnet/pull/5184))
 - Use transitive Rust build features and fix various build issues ([#5187](https://github.com/hoprnet/hoprnet/pull/5187))
 - Change `core-ethereum` to operate on Ethereum `Address`es rather than `PublicKey`s ([#5189](https://github.com/hoprnet/hoprnet/pull/5189))
+- Change the ticket auto redeem and check unrealized balance cli arguments ([#5235](https://github.com/hoprnet/hoprnet/pull/5235))
+- Fixed DB deadlocks and changed the DB backend & fixed channel and ticket issues in the DB ([#5229](https://github.com/hoprnet/hoprnet/pull/5229))
+- Replace the js-libp2p connection mechanism with the rust-libp2p ([#5153](https://github.com/hoprnet/hoprnet/pull/5153))
+- Add `application_tag` into the payload of HOPR protocol, prepare Message Inbox backend ([#5260](https://github.com/hoprnet/hoprnet/pull/5260))
+- Rest API: Replace v2 with v3 which adds message inbox support and compatibility with new smart contracts ([#5297](https://github.com/hoprnet/hoprnet/pull/5297))
+- Tickets 2.0: tickets use a VRF (verified random function) and no longer depend on external randomness ("iterated hash") ([#5338](https://github.com/hoprnet/hoprnet/pull/5338))
+- Tickets 2.0: payment channel funding happens immediately as it no longer requires any on-chain commitments ([#5338](https://github.com/hoprnet/hoprnet/pull/5338))
+- Prevent relayers from extracting multiple base amounts ([#5385](https://github.com/hoprnet/hoprnet/pull/5385))
+- Added dynamic price per packet via the TicketPriceOracle smart contract ([#5372](https://github.com/hoprnet/hoprnet/pull/5372))
 
 <a name="1.93"></a>
 
