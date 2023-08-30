@@ -1745,7 +1745,7 @@ pub mod wasm {
 
         #[wasm_bindgen]
         pub async fn on_event(
-            &mut self,
+            &self,
             db: &Database,
             address: &str,
             topics: Array,
