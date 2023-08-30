@@ -276,11 +276,13 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementProcessor<Db> {
                 let ack_ticket = unackowledged.acknowledge(&ack.ack_key_share, &self.chain_key, &domain_separator)?;
 
                 // replace the un-acked ticket with acked ticket.
+                debug!(">>> WRITE replacing unack with ack");
                 self.db
                     .write()
                     .await
                     .replace_unack_with_ack(&ack.ack_challenge(), ack_ticket.clone())
                     .await?;
+                debug!("<<< WRITE replacing unack with ack");
 
                 #[cfg(all(feature = "prometheus", not(test)))]
                 METRIC_ACKED_TICKETS.increment();
@@ -365,6 +367,7 @@ impl AcknowledgementInteraction {
                         if let Ok(remote_pk) = OffchainPublicKey::from_peerid(&peer) {
                             debug!("validating incoming acknowledgement from {}", peer);
                             if ack.validate(&remote_pk) {
+                                debug!("going to handle incoming ack");
                                 match processor.handle_acknowledgement(ack).await {
                                     Ok(_) => Some(AckProcessed::Receive(peer, Ok(()))),
                                     Err(e) => {
@@ -495,11 +498,13 @@ where
             .await?
             .unwrap_or(U256::one());
 
+        debug!(">>> WRITE set_current_ticket_index");
         self.db
             .write()
             .await
             .set_current_ticket_index(channel_id, current_ticket_index + 1u64.into())
             .await?;
+        debug!("<<< WRITE set_current_ticket_index");
 
         Ok(current_ticket_index)
     }
@@ -569,7 +574,9 @@ where
             channel.channel_epoch,
         )?;
 
+        debug!(">>> WRITE mark_pending");
         self.db.write().await.mark_pending(&destination, &ticket).await?;
+        debug!("<<< WRITE mark_pending");
 
         debug!("Creating ticket in channel {channel_id}.",);
 
@@ -614,11 +621,13 @@ where
         debug!("packet state {}", packet.state());
         match packet.state() {
             PacketState::Outgoing { ack_challenge, .. } => {
+                debug!(">>> WRITE store_pending_ack");
                 self.db
                     .write()
                     .await
                     .store_pending_acknowledgment(*ack_challenge, PendingAcknowledgement::WaitingAsSender)
                     .await?;
+                debug!("<<< WRITE store_pending_ack");
 
                 Ok((
                     Payload {
@@ -662,10 +671,13 @@ where
 
             PacketState::Final { packet_tag, .. } => {
                 // Validate if it's not a replayed packet
+                debug!("validating for packet replay");
                 if self.db.write().await.check_and_set_packet_tag(packet_tag).await? {
+                    error!("replayed packet with tag {}", hex::encode(packet_tag));
                     return Err(TagReplay);
                 }
 
+                debug!("packet is not replayed, creating acknowledgement...");
                 let ack = packet.create_acknowledgement(&self.cfg.packet_keypair);
                 return Ok(PacketType::Final(packet, ack));
             }
@@ -679,10 +691,12 @@ where
                 path_pos,
                 ..
             } => {
-                // Validate if it's not a replayed packet
+                debug!("validating for forwarded packet replay");
                 if self.db.write().await.check_and_set_packet_tag(packet_tag).await? {
+                    error!("replayed packet with tag {}", hex::encode(packet_tag));
                     return Err(TagReplay);
                 }
+                debug!("forwarded packet is not replayed");
 
                 let previous_hop_addr =
                     self.db
@@ -748,15 +762,19 @@ where
                 .await
                 {
                     // Mark as reject and passthrough the error
+                    debug!(">>> WRITE mark_rejected");
                     self.db.write().await.mark_rejected(&packet.ticket).await?;
+                    debug!("<<< WRITE mark_rejected");
                     return Err(e);
                 }
 
                 {
+                    debug!(">>> WRITE store_pending_ack");
                     let mut g = self.db.write().await;
                     g.set_current_ticket_index(&channel.get_id().hash(), packet.ticket.index.into())
                         .await?;
 
+                    debug!("storing pending acknowledgement");
                     // Store the unacknowledged ticket
                     g.store_pending_acknowledgment(
                         *ack_challenge,
@@ -768,6 +786,7 @@ where
                     )
                     .await?;
                 }
+                debug!("<<< WRITE store_pending_ack");
 
                 // Check that the calculated path position from the ticket matches value from the packet header
                 let ticket_path_pos = packet.ticket.get_path_position(U256::from(price_per_packet))?;

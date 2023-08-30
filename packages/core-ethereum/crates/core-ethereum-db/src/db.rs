@@ -1079,10 +1079,7 @@ pub mod wasm {
         }
     }
 
-    /*
-    -- Un-comment these when hunting for deadlocks --
-
-    macro_rules! check_lock_read {
+     /*macro_rules! check_lock_read {
         { $($rest:tt)* } => {
             let r = {
                 utils_misc::console_log!("{} >>> READ ", stdext::function_name!());
@@ -1091,7 +1088,7 @@ pub mod wasm {
             utils_misc::console_log!("{} <<< READ ", stdext::function_name!());
             r
         };
-    }
+    }*/
 
     macro_rules! check_lock_write {
         { $($rest:tt)* } => {
@@ -1102,7 +1099,7 @@ pub mod wasm {
             utils_misc::console_log!("{} <<< WRITE ", stdext::function_name!());
             r
         };
-    }*/
+    }
 
     #[wasm_bindgen]
     impl Database {
@@ -1125,10 +1122,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn delete_acknowledged_tickets_from(&self, source: ChannelEntry) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.delete_acknowledged_tickets_from(source).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1143,10 +1140,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn update_latest_block_number(&self, number: u32) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.update_latest_block_number(number).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1291,19 +1288,19 @@ pub mod wasm {
             snapshot: &Snapshot,
         ) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.link_chain_and_packet_keys(chain_key, packet_key, snapshot).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn mark_pending(&self, counterparty: &Address, ticket: &Ticket) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.mark_pending(counterparty, &ticket.into()).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1314,10 +1311,10 @@ pub mod wasm {
             snapshot: &Snapshot,
         ) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.resolve_pending(address, balance, snapshot).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1327,20 +1324,20 @@ pub mod wasm {
             acked_ticket: &AcknowledgedTicket,
         ) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.mark_redeemed(counterparty, &acked_ticket.into()).await)
-            //}
+            }
         }
 
         /// NOTE: needed only for testing
         #[wasm_bindgen]
         pub async fn mark_rejected(&self, ticket: &Ticket) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.mark_rejected(&ticket.into()).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1350,10 +1347,10 @@ pub mod wasm {
             ticket: &AcknowledgedTicket,
         ) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.mark_losing_acked_ticket(counterparty, &ticket.into()).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1431,10 +1428,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn set_hopr_balance(&self, balance: &Balance) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.set_hopr_balance(balance).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1449,10 +1446,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn set_ticket_price(&self, ticket_price: &U256) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.set_ticket_price(ticket_price).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1475,10 +1472,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn set_staking_module_address(&self, module_address: &Address) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.set_staking_module_address(module_address).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1492,10 +1489,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn set_staking_safe_address(&self, safe_address: &Address) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.set_staking_safe_address(safe_address).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1510,28 +1507,28 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn set_staking_safe_allowance(&self, balance: &Balance, snapshot: &Snapshot) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.set_staking_safe_allowance(balance, snapshot).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn check_and_set_packet_tag(&self, tag: &Uint8Array) -> Result<bool, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.check_and_set_packet_tag(&tag.to_vec()).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn store_authorization(&self, token: AuthorizationToken) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.store_authorization(token).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1546,10 +1543,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn delete_authorization(&self, id: String) -> Result<(), JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_write! {
+            check_lock_write! {
             let mut db = data.write().await;
             utils_misc::ok_or_jserr!(db.delete_authorization(id).await)
-            //}
+            }
         }
     }
 }
