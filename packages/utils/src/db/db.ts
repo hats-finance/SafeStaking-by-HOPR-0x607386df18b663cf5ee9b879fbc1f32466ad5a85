@@ -87,7 +87,14 @@ export class LevelDb {
   }
 
   public async remove(key: Uint8Array): Promise<void> {
-    await this.backend.del(u8aToHex(key))
+    try {
+      log(`######## remove begin`);
+      await this.backend.del(u8aToHex(key))
+      log(`######## remove done`);
+    }
+    catch (err) {
+      log(`######## err while deleting ${err}`);
+    }
   }
 
   public async batch(ops: Array<any>, wait_for_write = true): Promise<void> {
