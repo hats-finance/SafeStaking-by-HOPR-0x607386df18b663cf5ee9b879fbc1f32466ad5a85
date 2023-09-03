@@ -207,15 +207,21 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementProcessor<Db> {
                     .unwrap()
                     .ok_or(MissingDomainSeparator)?;
 
+                debug!("read domain separator");
+
                 let ack_ticket = unackowledged.acknowledge(&ack.ack_key_share, &self.chain_key, &domain_separator)?;
 
+                debug!("created AcknowledgedTicket");
+
                 // replace the un-acked ticket with acked ticket.
-                debug!(">>> WRITE replacing unack with ack");
-                self.db
-                    .write()
-                    .await
-                    .replace_unack_with_ack(&ack.ack_challenge(), ack_ticket.clone())
-                    .await?;
+                {
+                    let mut g = self.db
+                        .write()
+                        .await;
+                    debug!(">>> WRITE replacing unack with ack");
+                    g.replace_unack_with_ack(&ack.ack_challenge(), ack_ticket.clone())
+                        .await?;
+                }
                 debug!("<<< WRITE replacing unack with ack");
 
                 async_std::task::yield_now().await;
