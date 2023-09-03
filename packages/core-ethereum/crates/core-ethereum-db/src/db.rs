@@ -145,8 +145,11 @@ impl<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> HoprCoreEthereumDbAc
         //debug!("execute replace_unack_with_ack");
         //self.db.batch(batch_ops, false).await
 
+        debug!("removing unacked");
         self.db.remove::<UnacknowledgedTicket>(unack_key).await?;
+        debug!("removed unacked");
         self.db.set(ack_key, &ack_ticket).await?;
+        debug!("set acked");
 
         Ok(())
     }
