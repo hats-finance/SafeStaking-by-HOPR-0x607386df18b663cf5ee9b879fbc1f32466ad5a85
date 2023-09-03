@@ -555,6 +555,8 @@ where
                 MissingDomainSeparator
             })?;
 
+        debug!("received domain separator in cop");
+
         // Decide whether to create 0-hop or multihop ticket
         let next_ticket = if path.length() == 1 {
             Ticket::new_zero_hop(&next_peer, &self.cfg.chain_keypair, &domain_separator)
@@ -612,11 +614,14 @@ where
                 MissingDomainSeparator
             })?;
 
+        debug!("received domain separator in hmp");
+
         match packet.state() {
             PacketState::Outgoing { .. } => return Err(InvalidPacketState),
 
             PacketState::Final { packet_tag, .. } => {
                 // Validate if it's not a replayed packet
+                debug!("validating final packet");
                 if self.tbf.write().await.check_and_set(packet_tag) {
                     // This could be a false positive (0.1% chance) due to the use of Bloom filter
                     return Err(TagReplay);
@@ -636,6 +641,7 @@ where
                 path_pos,
                 ..
             } => {
+                debug!("validating forwarded packet");
                 // Validate if it's not a replayed packet
                 if self.tbf.write().await.check_and_set(packet_tag) {
                     // This could be a false positive due to the use of Bloom filter
