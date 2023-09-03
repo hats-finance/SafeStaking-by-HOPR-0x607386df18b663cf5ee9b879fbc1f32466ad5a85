@@ -8,6 +8,7 @@ use std::{
     fmt::{Display, Formatter},
     ops::Deref,
 };
+use utils_log::debug;
 use utils_types::traits::BinarySerializable;
 
 pub struct Batch {
@@ -183,7 +184,10 @@ impl<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> DB<T> {
     }
 
     pub async fn batch(&mut self, batch: Batch, wait_for_write: bool) -> Result<()> {
-        self.backend.batch(batch.ops, wait_for_write).await
+        debug!("~~ begin batch");
+        let r = self.backend.batch(batch.ops, wait_for_write).await
+        debug!("~~ batch done");
+        r
     }
 }
 
