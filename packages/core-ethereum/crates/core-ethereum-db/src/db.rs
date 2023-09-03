@@ -1064,7 +1064,7 @@ pub mod wasm {
         }
     }
 
-     /*macro_rules! check_lock_read {
+     macro_rules! check_lock_read {
         { $($rest:tt)* } => {
             let r = {
                 utils_misc::console_log!("{} >>> READ ", stdext::function_name!());
@@ -1073,7 +1073,7 @@ pub mod wasm {
             utils_misc::console_log!("{} <<< READ ", stdext::function_name!());
             r
         };
-    }*/
+    }
 
     macro_rules! check_lock_write {
         { $($rest:tt)* } => {
@@ -1094,14 +1094,14 @@ pub mod wasm {
             filter: Option<ChannelEntry>,
         ) -> Result<WasmVecAcknowledgedTicket, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db
                 .get_acknowledged_tickets(filter)
                 .await
                 .map(|x| { x.into_iter().map(AcknowledgedTicket::from).collect::<Vec<_>>() })
                 .map(WasmVecAcknowledgedTicket::from))
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1116,10 +1116,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn get_latest_block_number(&self) -> Result<u32, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_latest_block_number().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1134,135 +1134,135 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn get_latest_confirmed_snapshot(&self) -> Result<Option<Snapshot>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_latest_confirmed_snapshot().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channel(&self, channel: &Hash) -> Result<Option<ChannelEntry>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channel(channel).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channels(&self) -> Result<WasmVecChannelEntry, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channels().await).map(WasmVecChannelEntry::from)
-            //}
+            }
         }
 
         pub async fn get_channels_open(&self) -> Result<WasmVecChannelEntry, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channels_open().await).map(WasmVecChannelEntry::from)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_account(&self, address: &Address) -> Result<Option<AccountEntry>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_account(address).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_accounts(&self) -> Result<WasmVecAccountEntry, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_accounts().await).map(WasmVecAccountEntry::from)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_public_node_accounts(&self) -> Result<WasmVecAccountEntry, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_public_node_accounts().await).map(WasmVecAccountEntry::from)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_redeemed_tickets_value(&self) -> Result<Balance, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_redeemed_tickets_value().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_redeemed_tickets_count(&self) -> Result<usize, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_redeemed_tickets_count().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_neglected_tickets_count(&self) -> Result<usize, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_neglected_tickets_count().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_pending_tickets_count(&self) -> Result<usize, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_pending_tickets_count().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_losing_tickets_count(&self) -> Result<usize, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_losing_tickets_count().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_pending_balance_to(&self, counterparty: &Address) -> Result<Balance, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_pending_balance_to(counterparty).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_packet_key(&self, chain_key: &Address) -> Result<Option<OffchainPublicKey>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_packet_key(chain_key).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_chain_key(&self, packet_key: &OffchainPublicKey) -> Result<Option<Address>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_chain_key(packet_key).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1341,73 +1341,73 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn get_rejected_tickets_value(&self) -> Result<Balance, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_rejected_tickets_value().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_rejected_tickets_count(&self) -> Result<usize, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_rejected_tickets_count().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channel_x(&self, src: &Address, dest: &Address) -> Result<Option<ChannelEntry>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channel_x(src, dest).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channel_to(&self, dest: &Address) -> Result<Option<ChannelEntry>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channel_to(dest).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channel_from(&self, src: &Address) -> Result<Option<ChannelEntry>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channel_from(src).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channels_from(&self, address: &Address) -> Result<WasmVecChannelEntry, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channels_from(address).await).map(WasmVecChannelEntry::from)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_channels_to(&self, address: &Address) -> Result<WasmVecChannelEntry, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_channels_to(address).await).map(WasmVecChannelEntry::from)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_hopr_balance(&self) -> Result<Balance, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_hopr_balance().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1422,10 +1422,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn get_ticket_price(&self) -> Result<Option<U256>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_ticket_price().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1440,19 +1440,19 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn is_allowed_to_access_network(&self, node: &Address) -> Result<bool, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.is_allowed_to_access_network(&node.clone()).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
         pub async fn get_staking_module_address(&self) -> Result<Option<Address>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_staking_module_address().await)
-            //}
+            }
         }
         #[wasm_bindgen]
         pub async fn set_staking_module_address(&self, module_address: &Address) -> Result<(), JsValue> {
@@ -1466,10 +1466,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn get_staking_safe_address(&self) -> Result<Option<Address>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_staking_safe_address().await)
-            //}
+            }
         }
         #[wasm_bindgen]
         pub async fn set_staking_safe_address(&self, safe_address: &Address) -> Result<(), JsValue> {
@@ -1483,10 +1483,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn get_staking_safe_allowance(&self) -> Result<Balance, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.get_staking_safe_allowance().await)
-            //}
+            }
         }
 
         #[wasm_bindgen]
@@ -1510,10 +1510,10 @@ pub mod wasm {
         #[wasm_bindgen]
         pub async fn retrieve_authorization(&self, id: String) -> Result<Option<AuthorizationToken>, JsValue> {
             let data = self.core_ethereum_db.clone();
-            //check_lock_read! {
+            check_lock_read! {
             let db = data.read().await;
             utils_misc::ok_or_jserr!(db.retrieve_authorization(id).await)
-            //}
+            }
         }
 
         #[wasm_bindgen]

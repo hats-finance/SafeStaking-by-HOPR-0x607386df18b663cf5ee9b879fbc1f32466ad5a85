@@ -182,6 +182,7 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementProcessor<Db> {
                         "the acknowledgement is not sufficient to solve the embedded challenge, {e}"
                     ))
                 })?;
+                debug!("got ack as a relayer");
 
                 self.db
                     .read()
@@ -662,6 +663,8 @@ where
                     .await?
                     .ok_or(ChannelNotFound(previous_hop.to_string()))?;
 
+                debug!("checking price per packet");
+
                 // Validate the ticket first
                 let price_per_packet = self
                     .db
@@ -742,6 +745,8 @@ where
                 next_peer = next_hop.to_peerid();
             }
         }
+
+        debug!("forwarding packet from {previous_peer} to {next_peer}");
 
         // Transform the packet for forwarding using the next ticket
         packet.forward(&self.cfg.chain_keypair, next_ticket, &domain_separator)?;
