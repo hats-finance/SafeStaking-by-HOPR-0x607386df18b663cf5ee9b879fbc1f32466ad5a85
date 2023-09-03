@@ -95,6 +95,7 @@ export class LevelDb {
       sync: wait_for_write
     }
 
+    log(`######## js preparing batch`);
     let batch = this.backend.batch()
     for (const op of ops) {
       if (!op.hasOwnProperty('type') || !op.hasOwnProperty('key')) {
@@ -111,7 +112,9 @@ export class LevelDb {
       }
     }
 
+    log(`######## js exec batch`);
     await batch.write(options)
+    log(`######## js batch done`);
   }
 
   public async maybeGet(key: Uint8Array): Promise<Uint8Array | undefined> {

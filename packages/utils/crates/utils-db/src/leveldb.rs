@@ -5,6 +5,7 @@ pub mod wasm {
     use async_trait::async_trait;
     use futures_lite::stream::StreamExt;
     use wasm_bindgen::prelude::*;
+    use utils_log::debug;
 
     // https://users.rust-lang.org/t/wasm-web-sys-how-to-manipulate-js-objects-from-rust/36504
     #[wasm_bindgen]
@@ -153,7 +154,10 @@ pub mod wasm {
                 .map(|op| serde_wasm_bindgen::to_value(&op))
                 .collect::<Vec<_>>();
 
+            debug!("+++++ preparing leveldb batch op");
+
             if ops.iter().any(|i| i.is_err()) {
+                debug!("+++++ batch op failed");
                 Err(DbError::GenericError(
                     "Batch operation contains a deserialization error, aborting".to_string(),
                 ))
@@ -162,10 +166,13 @@ pub mod wasm {
                     .into_iter()
                     .filter_map(|op| op.ok().map(|v| JsValue::from(&v)))
                     .collect();
-                self.db
+                debug!("+++++ batch op is being executed");
+                let r = self.db
                     .batch(ops, wait_for_write)
                     .await
-                    .map_err(|e| DbError::GenericError(format!("Batch operation failed to write data: {:?}", e)))
+                    .map_err(|e| DbError::GenericError(format!("Batch operation failed to write data: {:?}", e)));
+                debug!("+++++ batch op done");
+                r
             }
         }
     }
