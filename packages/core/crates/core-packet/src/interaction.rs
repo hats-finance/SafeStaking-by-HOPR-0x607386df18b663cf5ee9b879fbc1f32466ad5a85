@@ -218,6 +218,10 @@ impl<Db: HoprCoreEthereumDbActions> AcknowledgementProcessor<Db> {
                     .await?;
                 debug!("<<< WRITE replacing unack with ack");
 
+                async_std::task::yield_now().await;
+
+                debug!("yielding done");
+
                 #[cfg(all(feature = "prometheus", not(test)))]
                 METRIC_ACKED_TICKETS.increment();
 
