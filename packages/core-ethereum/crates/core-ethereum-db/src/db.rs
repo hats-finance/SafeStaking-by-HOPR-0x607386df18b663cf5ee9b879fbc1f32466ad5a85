@@ -138,12 +138,17 @@ impl<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> HoprCoreEthereumDbAc
         let ack_key =
             to_acknowledged_ticket_key(&ack_ticket.ticket.challenge, &ack_ticket.ticket.channel_epoch.into())?;
 
-        let mut batch_ops = utils_db::db::Batch::new();
-        batch_ops.del(unack_key);
-        batch_ops.put(ack_key, ack_ticket);
+        //let mut batch_ops = utils_db::db::Batch::new();
+        //batch_ops.del(unack_key);
+        //batch_ops.put(ack_key, ack_ticket);
 
-        debug!("execute replace_unack_with_ack");
-        self.db.batch(batch_ops, false).await
+        //debug!("execute replace_unack_with_ack");
+        //self.db.batch(batch_ops, false).await
+
+        self.db.remove::<UnacknowledgedTicket>(unack_key).await?;
+        self.db.set(ack_key, &ack_ticket).await?;
+
+        Ok(())
     }
 
     // core and core-ethereum part
