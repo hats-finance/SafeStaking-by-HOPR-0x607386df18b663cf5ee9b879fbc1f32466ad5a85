@@ -185,7 +185,7 @@ impl<T: AsyncKVStorage<Key = Box<[u8]>, Value = Box<[u8]>>> DB<T> {
 
     pub async fn batch(&mut self, batch: Batch, wait_for_write: bool) -> Result<()> {
         debug!("~~ begin batch");
-        let r = self.backend.batch(batch.ops, wait_for_write).await
+        let r = self.backend.batch(batch.ops, wait_for_write).await;
         debug!("~~ batch done");
         r
     }
