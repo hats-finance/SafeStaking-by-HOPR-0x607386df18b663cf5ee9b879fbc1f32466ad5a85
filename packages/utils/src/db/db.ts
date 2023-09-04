@@ -86,10 +86,6 @@ export class LevelDb {
   public async batch(ops: Array<any>, _wait_for_write = true): Promise<void> {
     let transaction = () => {
       for (const op of ops) {
-        if (!op.hasOwnProperty('type') || !op.hasOwnProperty('key')) {
-          throw new Error('Invalid operation, missing key or type: ' + JSON.stringify(op))
-        }
-
         if (op.type === 'put') {
           this.backend.remove(op.key) // We must try to delete first then insert (in case of updates)
           this.backend.put(op.key, op.value)
@@ -102,7 +98,7 @@ export class LevelDb {
     }
 
     //if (wait_for_write) {
-      this.backend.transactionSync(transaction)
+    //  this.backend.transactionSync(transaction)
     //} else {
       await this.backend.transaction(transaction)
     //}
