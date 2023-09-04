@@ -2,10 +2,8 @@ import { stat, mkdir, rm } from 'fs/promises'
 import { debug } from '../process/index.js'
 
 import fs from 'fs'
-import { stringToU8a, u8aConcat, u8aToHex } from '../u8a/index.js'
-import { AbstractLevel } from 'abstract-level'
-import { MemoryLevel } from 'memory-level'
-const SqliteLevel = (await import('sqlite-level')).default.SqliteLevel
+import { u8aConcat, u8aToHex } from '../u8a/index.js'
+import { open, Database as Lmdb } from 'lmdb'
 
 const log = debug(`hopr-core:db`)
 
@@ -15,11 +13,11 @@ const decoder = new TextDecoder()
 const NETWORK_KEY = encoder.encode('network_id')
 
 export class LevelDb {
-  public backend: AbstractLevel<string | Uint8Array | Buffer>
+  public backend: Lmdb
 
   constructor() {
     // unless initialized with a specific db path, memory version is used
-    this.backend = new MemoryLevel()
+    this.backend = open({ encoding: 'ordered-binary', useVersions: false })
   }
 
   public async init(initialize: boolean, dbPath: string, forceCreate: boolean = false, networkId: string) {
@@ -56,10 +54,7 @@ export class LevelDb {
       }
     }
 
-    this.backend = new SqliteLevel({ filename: dbPath + '/db.sqlite' })
-
-    // Fully initialize database
-    await this.backend.open()
+    this.backend = open(dbPath, {encoding: 'ordered-binary', useVersions: false})
 
     if (setNetwork) {
       log(`setting network id ${networkId} to db`)
@@ -77,52 +72,48 @@ export class LevelDb {
   }
 
   public async put(key: Uint8Array, value: Uint8Array): Promise<void> {
-    let k = u8aToHex(key)
-    await this.backend.del(k) // Delete first in case the value already exists
-    return await this.backend.put(k, u8aToHex(value))
+    await this.backend.put(key, value)
   }
 
   public async get(key: Uint8Array): Promise<Uint8Array> {
-    return stringToU8a(await this.backend.get(u8aToHex(key)))
+    let r = this.backend.get(key)
+    if (r == undefined) {
+       throw Error("key " + u8aToHex(key) + " not found")
+    }
+    return r
   }
 
   public async remove(key: Uint8Array): Promise<void> {
-    await this.backend.del(u8aToHex(key))
+    await this.backend.remove(key)
   }
 
-  public async batch(ops: Array<any>, wait_for_write = true): Promise<void> {
-    const options: { sync: boolean } = {
-      sync: wait_for_write
-    }
+  public async batch(ops: Array<any>, _wait_for_write = true): Promise<void> {
+    let transaction = () => {
+      for (const op of ops) {
+        if (!op.hasOwnProperty('type') || !op.hasOwnProperty('key')) {
+          throw new Error('Invalid operation, missing key or type: ' + JSON.stringify(op))
+        }
 
-    let batch = this.backend.batch()
-    for (const op of ops) {
-      if (!op.hasOwnProperty('type') || !op.hasOwnProperty('key')) {
-        throw new Error('Invalid operation, missing key or type: ' + JSON.stringify(op))
-      }
-
-      if (op.type === 'put') {
-        batch.del(u8aToHex(op.key)) // We must try to delete first then insert (in case of updates)
-        batch.put(u8aToHex(op.key), u8aToHex(op.value))
-      } else if (op.type === 'del') {
-        batch.del(u8aToHex(op.key))
-      } else {
-        throw new Error(`Unsupported operation type: ${JSON.stringify(op)}`)
+        if (op.type === 'put') {
+          this.backend.remove(op.key) // We must try to delete first then insert (in case of updates)
+          this.backend.put(op.key, op.value)
+        } else if (op.type === 'del') {
+          this.backend.remove(op.key)
+        } else {
+          throw new Error(`Unsupported operation type: ${JSON.stringify(op)}`)
+        }
       }
     }
 
-    await batch.write(options)
+    //if (wait_for_write) {
+      this.backend.transactionSync(transaction)
+    //} else {
+      await this.backend.transaction(transaction)
+    //}
   }
 
   public async maybeGet(key: Uint8Array): Promise<Uint8Array | undefined> {
-    try {
-      return await this.get(key)
-    } catch (err) {
-      if (err.type === 'NotFoundError' || err.notFound) {
-        return undefined
-      }
-      throw err
-    }
+    return this.backend.get(key)
   }
 
   public iterValues(prefix: Uint8Array, suffixLength: number): AsyncIterable<Uint8Array> {
@@ -133,13 +124,12 @@ export class LevelDb {
     const firstPrefixed = u8aConcat(prefix, new Uint8Array(suffixLength).fill(0x00))
     const lastPrefixed = u8aConcat(prefix, new Uint8Array(suffixLength).fill(0xff))
 
-    for await (const [_key, chunk] of this.backend.iterator({
-      // LevelDB does not support Uint8Arrays, always convert to Buffer
-      gte: u8aToHex(firstPrefixed),
-      lte: u8aToHex(lastPrefixed),
-      keys: false
-    }) as any) {
-      yield stringToU8a(chunk)
+    for await (let v of this.backend.getRange({
+      start: firstPrefixed,
+      end: lastPrefixed,
+      versions: false
+    })) {
+      yield v.value
     }
   }
 
@@ -151,8 +141,8 @@ export class LevelDb {
   public async dump(destFile: string) {
     log(`Dumping current database to ${destFile}`)
     let dumpFile = fs.createWriteStream(destFile, { flags: 'a' })
-    for await (const [key_hex, value_hex] of this.backend.iterator()) {
-      let key = stringToU8a(key_hex)
+    for await (const v of this.backend.getRange()) {
+      let key = v.key as Uint8Array
       let out = ''
       while (key.length > 0) {
         const nextDelimiter = key.findIndex((v: number) => v == 0x2d) // 0x2d ~= '-'
@@ -169,7 +159,7 @@ export class LevelDb {
           key = (key as Buffer).subarray(nextDelimiter + 1)
         }
       }
-      dumpFile.write(out + ',' + value_hex + '\n')
+      dumpFile.write(out + ',' + u8aToHex(v.value as Uint8Array) + '\n')
     }
     dumpFile.close()
   }
