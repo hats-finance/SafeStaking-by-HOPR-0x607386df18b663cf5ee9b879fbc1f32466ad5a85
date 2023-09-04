@@ -76,11 +76,7 @@ export class LevelDb {
   }
 
   public async get(key: Uint8Array): Promise<Uint8Array> {
-    let r = this.backend.get(key)
-    if (r == undefined) {
-       throw Error("key " + u8aToHex(key) + " not found")
-    }
-    return r
+    return this.backend.get(key)
   }
 
   public async remove(key: Uint8Array): Promise<void> {
