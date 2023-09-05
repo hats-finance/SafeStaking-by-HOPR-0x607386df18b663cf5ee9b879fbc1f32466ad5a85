@@ -145,11 +145,13 @@ api_remove_alias() {
 
 # $1 = node api endpoint
 # $2 = include closing (true/false)
+# $3 = get topology (true/false)
 api_get_all_channels() {
   local node_api="${1}"
-  local including_closed=${2}
+  local including_closed="${2-false}"
+  local topology="${3:-false}"
 
-  api_call "${node_api}" "/channels?includingClosed=${including_closed}" "GET" "" "incoming" 600
+  api_call "${node_api}" "/channels?includingClosed=${including_closed}&fullTopology=${topology}" "GET" "" "incoming" 600
 }
 
 # $1 = node api endpoint

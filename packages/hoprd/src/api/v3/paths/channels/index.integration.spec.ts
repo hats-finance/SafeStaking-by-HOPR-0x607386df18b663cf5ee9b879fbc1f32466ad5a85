@@ -104,6 +104,18 @@ describe('GET /channels', function () {
     expect(res.body.all[1].channelId).to.deep.equal(outgoing.get_id().to_hex())
     expect(res.body.all[2].channelId).to.deep.equal(otherChannel.get_id().to_hex())
   })
+
+  it('should get all the channels excluding closed', async function () {
+    const res = await request(service).get('/api/v3/channels?includingClosed=false&fullTopology=true')
+    expect(res.status).to.equal(200)
+    expect(res).to.satisfyApiSpec
+    expect(res.body.incoming.length).to.be.equal(0)
+    expect(res.body.outgoing.length).to.be.equal(0)
+    expect(res.body.all.length).to.be.equal(3)
+    expect(res.body.all[0].channelId).to.deep.equal(incoming.get_id().to_hex())
+    expect(res.body.all[1].channelId).to.deep.equal(outgoing.get_id().to_hex())
+    expect(res.body.all[2].channelId).to.deep.equal(otherChannel.get_id().to_hex())
+  })
 })
 
 describe('POST /channels', () => {

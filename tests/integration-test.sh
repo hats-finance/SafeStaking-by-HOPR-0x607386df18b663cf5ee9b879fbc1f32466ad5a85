@@ -434,8 +434,13 @@ test_get_all_channels() {
   channels_with_closed=$(api_get_all_channels ${node_api} true)
   channels_with_closed_count=$(echo ${channels_with_closed} | jq '.incoming | length')
 
+  channels_topology=$(api_get_all_channels ${node_api} true true)
+  channels_topology_count=$(echo ${channels_topology} | jq '.all | length')
+
   [[ "${channels_count}" -ge "${channels_with_closed_count}" ]] && { msg "There should be more channels returned with includeClosed flag: ${channels_count} !< ${channels_with_closed_count}"; exit 1; }
   [[ "${channels_with_closed}" != *"Closed"* ]] && { msg "Channels fetched with includeClosed flag should return channels with closed status: ${channels_with_closed}"; exit 1; }
+  [[ "${channels_with_closed_count}" -ge "${channels_topology_count}" ]] && { msg "There should be more channels returned with fullTopology flag: ${channels_with_closed_count} !< ${channels_topology_count}"; exit 1; }
+
   echo "Get all channels successful"
 }
 
