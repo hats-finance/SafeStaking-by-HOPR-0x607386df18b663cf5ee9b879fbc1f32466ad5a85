@@ -248,10 +248,12 @@ impl<S: SphinxSuite> MetaPacket<S> {
 }
 
 /// Indicates if the packet is supposed to be forwarded to the next hop or if it is intended for us.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PacketState {
     /// Packet is intended for us
     Final {
+        packet: Box<[u8]>,
+        ticket: Ticket,
         packet_tag: PacketTag,
         ack_key: HalfKey,
         previous_hop: OffchainPublicKey,
@@ -259,6 +261,8 @@ pub enum PacketState {
     },
     /// Packet must be forwarded
     Forwarded {
+        packet: Box<[u8]>,
+        ticket: Ticket,
         ack_challenge: HalfKeyChallenge,
         packet_tag: PacketTag,
         ack_key: HalfKey,
@@ -271,6 +275,8 @@ pub enum PacketState {
     },
     /// Packet that is being sent out by us
     Outgoing {
+        packet: Box<[u8]>,
+        ticket: Ticket,
         next_hop: OffchainPublicKey,
         ack_challenge: HalfKeyChallenge,
     },
@@ -288,13 +294,13 @@ impl Display for PacketState {
 
 /// Represents a HOPR packet.
 /// Packet also defines the conversion between peer ids, off-chain public keys and group elements from Sphinx suite.
-pub struct Packet {
-    packet: Box<[u8]>,
-    pub ticket: Ticket,
-    state: PacketState,
-}
+// pub struct Packet {
+//     // packet: Box<[u8]>,
+//     // pub ticket: Ticket,
+//     state: PacketState,
+// }
 
-impl Packet {
+impl PacketState {
     /// Size of the packet including header, payload, ticket and ack challenge.
     pub const SIZE: usize = PACKET_LENGTH + Ticket::SIZE;
 
@@ -321,22 +327,21 @@ impl Packet {
         ticket.challenge = por_values.ticket_challenge.to_ethereum_challenge();
         ticket.sign(chain_keypair, domain_separator);
 
-        Ok(Self {
-            packet: Box::from(MetaPacket::<CurrentSphinxSuite>::new(
-                shared_keys,
-                msg,
-                &public_keys_path,
-                INTERMEDIATE_HOPS + 1,
-                POR_SECRET_LENGTH,
-                &por_strings.iter().map(Box::as_ref).collect::<Vec<_>>(),
-                None,
-            ).to_bytes()),
-            ticket,
-            state: Outgoing {
+        Ok(Self::Outgoing {
+                packet: Box::from(MetaPacket::<CurrentSphinxSuite>::new(
+                    shared_keys,
+                    msg,
+                    &public_keys_path,
+                    INTERMEDIATE_HOPS + 1,
+                    POR_SECRET_LENGTH,
+                    &por_strings.iter().map(Box::as_ref).collect::<Vec<_>>(),
+                    None,
+                ).to_bytes()),
+                ticket,
                 next_hop: OffchainPublicKey::from_peerid(&path.hops()[0])?,
                 ack_challenge: por_values.ack_challenge,
             },
-        })
+        )
     }
 
     /// Deserializes the packet and performs the forward-transformation, so the
@@ -363,10 +368,9 @@ impl Packet {
 
                     let ticket = Ticket::from_bytes(pre_ticket)?;
                     let verification_output = pre_verify(&derived_secret, &additional_info, &ticket.challenge)?;
-                    Ok(Self {
-                        packet: Box::from(packet.to_bytes()),
-                        ticket,
-                        state: Forwarded {
+                    Ok(Self::Forwarded {
+                            packet: Box::from(packet.to_bytes()),
+                            ticket,
                             packet_tag,
                             ack_key,
                             previous_hop,
@@ -377,7 +381,7 @@ impl Packet {
                             next_challenge: verification_output.next_ticket_challenge,
                             ack_challenge: verification_output.ack_challenge,
                         },
-                    })
+                    )
                 }
                 FinalPacket {
                     packet_tag,
@@ -388,61 +392,65 @@ impl Packet {
                     let ack_key = derive_ack_key_share(&derived_secret);
 
                     let ticket = Ticket::from_bytes(pre_ticket)?;
-                    Ok(Self {
-                        packet: Box::from(mp.to_bytes()),
-                        ticket,
-                        state: Final {
+                    Ok(Self::Final {
+                            packet: Box::from(mp.to_bytes()),
+                            ticket,
                             packet_tag,
                             ack_key,
                             previous_hop,
                             plain_text,
                         },
-                    })
+                    )
                 }
             }
         } else {
             Err(PacketDecodingError("packet has invalid size".into()))
         }
     }
-
-    /// State of this packet
-    pub fn state(&self) -> &PacketState {
-        &self.state
-    }
+}
 
     /// Forwards the packet to the next hop.
     /// Requires private key of the local node and prepared ticket for the next recipient.
     /// Panics if the packet is not meant to be forwarded.
     pub fn forward(
-        &mut self,
+        mut packet: PacketState,
         chain_keypair: &ChainKeypair,
         mut next_ticket: Ticket,
         domain_separator: &Hash,
-    ) -> Result<()> {
-        match &mut self.state {
-            Forwarded { next_challenge, .. } => {
+    ) -> PacketState {
+        match packet {
+            Forwarded { next_challenge, packet, ticket, ack_challenge, packet_tag, ack_key, previous_hop, own_key, own_share, next_hop, path_pos  } => {
                 next_ticket.challenge = next_challenge.to_ethereum_challenge();
                 next_ticket.sign(chain_keypair, domain_separator);
-                self.ticket = next_ticket;
-                Ok(())
+                PacketState::Forwarded { 
+                    packet: packet,
+                    ticket: next_ticket,
+                    ack_challenge,
+                    packet_tag,
+                    ack_key, previous_hop, own_key, own_share, next_hop, next_challenge, path_pos }
             }
-            _ => Err(InvalidPacketState),
+            _ => packet,
         }
     }
-}
 
-impl Packet {
+impl PacketState {
     pub fn to_bytes(&self) -> Box<[u8]> {
+        let (packet, ticket) = match self {
+            Final { packet, ticket, .. } => (packet, ticket),
+            Forwarded { packet, ticket, .. } => (packet, ticket),
+            Outgoing { packet, ticket, .. } => (packet, ticket),
+        };
+
         let mut ret = Vec::with_capacity(Self::SIZE);
-        ret.extend_from_slice(self.packet.as_ref());
-        ret.extend_from_slice(&self.ticket.to_bytes());
+        ret.extend_from_slice(packet.as_ref());
+        ret.extend_from_slice(&ticket.to_bytes());
         ret.into_boxed_slice()
     }
 
     /// Creates an acknowledgement for this packet.
     /// Returns None if this packet is sent by us.
     pub fn create_acknowledgement(&self, node_keypair: &OffchainKeypair) -> Option<Acknowledgement> {
-        match &self.state {
+        match &self {
             Final { ack_key, .. } | Forwarded { ack_key, .. } => {
                 Some(Acknowledgement::new(ack_key.clone(), node_keypair))
             }
@@ -454,7 +462,7 @@ impl Packet {
 #[cfg(test)]
 mod tests {
     use crate::packet::{
-        add_padding, remove_padding, ForwardedMetaPacket, MetaPacket, Packet, PacketState, PADDING_TAG,
+        add_padding, remove_padding, ForwardedMetaPacket, MetaPacket, PacketState, PADDING_TAG,
     };
     use crate::por::{ProofOfRelayString, POR_SECRET_LENGTH};
     use core_crypto::{
@@ -587,10 +595,10 @@ mod tests {
 
         let test_message = b"some testing message";
         let path = Path::new_valid(keypairs.iter().map(|kp| kp.public().to_peerid()).collect());
-        let mut packet = Packet::new(test_message, &path, &own_channel_kp, ticket, &Hash::default())
+        let mut packet = PacketState::new(test_message, &path, &own_channel_kp, ticket, &Hash::default())
             .expect("failed to construct packet");
 
-        match &packet.state() {
+        match &packet {
             PacketState::Outgoing { .. } => {}
             _ => panic!("invalid packet initial state"),
         }
@@ -600,10 +608,10 @@ mod tests {
                 .then_some(own_packet_kp.public().to_peerid())
                 .unwrap_or_else(|| keypairs.get(i - 1).map(|kp| kp.public().to_peerid()).unwrap());
 
-            packet = Packet::from_bytes(&packet.to_bytes(), path_element, &sender)
+            packet = PacketState::from_bytes(&packet.to_bytes(), path_element, &sender)
                 .unwrap_or_else(|e| panic!("failed to deserialize packet at hop {i}: {e}"));
 
-            match packet.state() {
+            match &packet {
                 PacketState::Final { plain_text, .. } => {
                     assert_eq!(keypairs.len() - 1, i);
                     assert_eq!(&test_message, &plain_text.as_ref());
@@ -614,7 +622,7 @@ mod tests {
                         keypairs.len() - i - 1,
                         &channel_pairs[i],
                     );
-                    packet.forward(&channel_pairs[i], ticket, &Hash::default()).unwrap();
+                    packet = super::super::forward(packet.clone(), &channel_pairs[i], ticket, &Hash::default());
                 }
                 PacketState::Outgoing { .. } => panic!("invalid packet state"),
             }

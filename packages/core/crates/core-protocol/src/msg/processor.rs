@@ -9,15 +9,17 @@ use std::sync::Arc;
 use async_lock::RwLock;
 use rust_stream_ext_concurrent::then_concurrent::StreamThenConcurrentExt;
 
-use core_crypto::keypairs::{ChainKeypair, Keypair, OffchainKeypair};
-use core_crypto::types::{HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey};
+use core_crypto::{
+    keypairs::{ChainKeypair, Keypair, OffchainKeypair},
+    types::{HalfKey, HalfKeyChallenge, Hash, OffchainPublicKey}
+};
 use core_ethereum_db::traits::HoprCoreEthereumDbActions;
 use core_packet::errors::PacketError::{
     ChannelNotFound, MissingDomainSeparator, OutOfFunds, PacketConstructionError, PacketDecodingError, PathError,
     PathPositionMismatch, Retry, TagReplay, TransportError,
 };
 use core_packet::errors::Result;
-use core_packet::packet::{Packet, PacketState};
+use core_packet::packet::PacketState;
 use core_path::errors::PathError::PathNotValid;
 use core_path::path::Path;
 use core_types::acknowledgement::{Acknowledgement, PendingAcknowledgement, UnacknowledgedTicket};
@@ -39,6 +41,8 @@ use {gloo_timers::future::sleep, wasm_bindgen_futures::spawn_local};
 use core_packet::validation::validate_unacknowledged_ticket;
 #[cfg(all(feature = "prometheus", not(test)))]
 use utils_metrics::metrics::{SimpleCounter, SimpleGauge};
+
+use super::packet::TransportPacket;
 #[cfg(all(feature = "prometheus", not(test)))]
 lazy_static::lazy_static! {
     // packet processing
@@ -65,6 +69,7 @@ lazy_static::lazy_static! {
     static ref DEFAULT_PRICE_PER_PACKET: U256 = 10000000000000000u128.into();
 }
 
+
 /// Represents a payload (packet or acknowledgement) at the transport level.
 #[derive(Debug, Clone)]
 pub(crate) struct Payload {
@@ -88,7 +93,7 @@ const PACKET_RX_QUEUE_SIZE: usize = 2048;
 #[derive(Debug)]
 pub enum MsgToProcess {
     ToReceive(Box<[u8]>, PeerId),
-    ToSend(Box<[u8]>, Path, PacketSendFinalizer),
+    ToSend(ApplicationData, Path, PacketSendFinalizer),
     ToForward(Box<[u8]>, PeerId),
 }
 
@@ -120,9 +125,57 @@ where
     }
 }
 
-pub enum PacketType {
-    Final(Packet, Option<Acknowledgement>),
-    Forward(Packet, Option<Acknowledgement>, PeerId, PeerId),
+#[async_trait::async_trait(? Send)]
+impl<Db> crate::msg::packet::PacketConstructing for PacketProcessor<Db>
+where
+    Db: HoprCoreEthereumDbActions,
+{
+    type Input = ApplicationData;
+
+    async fn into_outgoing(&self, data: Self::Input, path: &Path) -> Result<TransportPacket> {
+        let next_peer = self
+            .db
+            .read()
+            .await
+            .get_chain_key(&OffchainPublicKey::from_peerid(&path.hops()[0])?)
+            .await?
+            .ok_or_else(|| {
+                debug!("Could not retrieve on-chain key for {}", path.hops()[0]);
+                PacketConstructionError
+            })?;
+
+        let domain_separator = self
+            .db
+            .read()
+            .await
+            .get_channels_domain_separator()
+            .await?
+            .ok_or_else(|| {
+                debug!("Missing domain separator.");
+                MissingDomainSeparator
+            })?;
+
+        // Decide whether to create 0-hop or multihop ticket
+        let next_ticket = if path.length() == 1 {
+            Ticket::new_zero_hop(&next_peer, &self.cfg.chain_keypair, &domain_separator)?
+        } else {
+            self.create_multihop_ticket(next_peer, path.length() as u8).await?
+        };
+
+        PacketState::new(&data.to_bytes(), &path, &self.cfg.chain_keypair, next_ticket, &domain_separator)
+            .map(|p| {
+                match p {
+                    PacketState::Final {..} | PacketState::Forwarded { .. } => unreachable!(),
+                    PacketState::Outgoing { packet, ticket, next_hop, ack_challenge } => {
+                        TransportPacket::Outgoing { next_hop: next_hop.to_peerid(), ack_challenge: ack_challenge.clone(), data: p.to_bytes() }
+                    },
+                }
+            })
+    }
+
+    async fn from_incoming(&self, data: Box<[u8]>) -> Result<TransportPacket> {
+        todo!()
+    }
 }
 
 impl<Db> PacketProcessor<Db>
@@ -464,7 +517,7 @@ pub struct PacketActions {
 /// Pushes the packet with the given payload for sending via the given valid path.
 impl PacketActions {
     /// Pushes a new packet from this node into processing.
-    pub fn send_packet(&mut self, msg: ApplicationData, path: Path) -> Result<PacketSendAwaiter> {
+    pub fn send_packet(&mut self, data: ApplicationData, path: Path) -> Result<PacketSendAwaiter> {
         // Check if the path is valid
         if !path.valid() {
             return Err(PathError(PathNotValid));
@@ -472,7 +525,7 @@ impl PacketActions {
 
         let (tx, rx) = futures::channel::oneshot::channel::<HalfKeyChallenge>();
 
-        self.process(MsgToProcess::ToSend(msg.to_bytes(), path, PacketSendFinalizer::new(tx)))
+        self.process(MsgToProcess::ToSend(data, path, PacketSendFinalizer::new(tx)))
             .map(move |_| {
                 let awaiter: PacketSendAwaiter = rx.into();
                 awaiter
@@ -574,7 +627,7 @@ impl PacketInteraction {
 
                             processor.create_outgoing_packet_parts(&path).await.and_then(
                                 |(chain_keypair, next_ticket, domain_separator)| {
-                                    Packet::new(&data, &path, &chain_keypair, next_ticket, &domain_separator)
+                                    Packet::new(&data.to_bytes(), &path, &chain_keypair, next_ticket, &domain_separator)
                                 },
                             )
                         }
