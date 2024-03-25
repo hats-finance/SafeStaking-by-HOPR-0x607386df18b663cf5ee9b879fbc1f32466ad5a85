@@ -23,9 +23,9 @@ SafeStaking by HOPR is a new tool for securing staked crypto-assets on Ethereum 
 
 - Type: A public audit competition hosted by SafeStaking by HOPR
 - Duration: 2 weeks
-- Maximum Reward: $1,000,000,000,000,000,000
+- Maximum Reward: ~$40k
 - Submissions: 59
-- Total Payout: $253,333,000,000,000,030 distributed among 9 participants.
+- Total Payout: ~$12K distributed among 9 participants.
 
 ## Scope of Audit
 
